@@ -1,0 +1,51 @@
+name: Stable Release
+on:
+  push:
+    tags:
+      - 'v[0-9]+.*' # Release tags matching v*, i.e. v1.0, v20.15.10
+  workflow_dispatch:
+
+jobs:
+  build_release_assets:
+    name: Build release assets
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { os: windows-latest, toolchain: nightly-x86_64-pc-windows-msvc, target: i686-pc-windows-msvc }
+          - { os: windows-latest, toolchain: nightly-x86_64-pc-windows-msvc, target: x86_64-pc-windows-msvc }
+
+    steps:
+      - uses: actions/checkout@master
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.config.toolchain }}
+          target: ${{ matrix.config.target }}
+
+      - name: Cache Dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.config.target }}
+
+      - name: Build release asset
+        run: cargo build --release --target ${{ matrix.config.target }}
+
+      - name: Package asset as zip
+        uses: thedoctor0/zip-release@0.7.1
+        with:
+          type: 'zip'
+          filename: "freecam-rs-${{ matrix.config.target }}.zip"
+          path: ".\\target\\${{ matrix.config.target }}\\release\\version.dll"
+
+      - name: Upload binaries to release
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          replacesArtifacts: false
+          artifacts: "freecam-rs-${{ matrix.config.target }}.zip"
+
+      - name: Clear the cargo caches
+        run: |
+          cargo install cargo-cache --no-default-features --features ci-autoclean
+          cargo-cache
