@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use log::LevelFilter;
+use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use crate::config::FreecamConfig;
-use crate::keyboard::KeyboardManager;
 
 mod config;
-mod keyboard;
+mod mouse;
+mod ptr;
 static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
 
 pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> {
@@ -27,7 +28,7 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     if conf.console {
         unsafe {
-            windows::Win32::System::Console::AllocConsole();
+            windows::Win32::System::Console::AllocConsole()?;
         }
     }
 
@@ -35,12 +36,19 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     let mut key_manager = KeyboardManager::new();
     let mut update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
+    let patcher = rust_hooking_utils::patching::LocalPatcher::new();
 
     while !SHUTDOWN_FLAG.load(Ordering::Acquire) {
         if let Some(reload) = &conf.reload_config_keys {
             if key_manager.all_pressed(reload.iter().copied().map(VIRTUAL_KEY)) {
                 conf = reload_config(config_directory, &conf)?;
                 update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
+            }
+
+            unsafe {
+                let camera_x = patcher.read(conf.addresses.camera_x.as_ref());
+
+                log::trace!("Camera x position: {camera_x}");
             }
         }
 

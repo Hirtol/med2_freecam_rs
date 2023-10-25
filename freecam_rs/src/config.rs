@@ -1,6 +1,8 @@
-use anyhow::Context;
+use std::fmt::Debug;
 use std::path::Path;
-use std::time::Duration;
+
+use crate::ptr::NonNullPtr;
+use anyhow::Context;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_R, VK_SHIFT};
 
 pub const CONFIG_FILE_NAME: &str = "freecam_config.json";
@@ -14,6 +16,7 @@ pub struct FreecamConfig {
     /// If set, will allow the config to be reloaded during gameplay by providing the given key codes.
     pub reload_config_keys: Option<Vec<u16>>,
     pub keybinds: KeybindsConfig,
+    pub addresses: AddressConfig,
 }
 
 /// All keys that need to be pressed for a speed state to be selected.
@@ -21,11 +24,11 @@ pub struct FreecamConfig {
 /// Expects [virtual key codes](https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes).
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct KeybindsConfig {
-    pause_key: u16,
-    exit_key: u16,
-    fast_key: u16,
-    slow_key: u16,
-    freecam_key: u16,
+    pub pause_key: u16,
+    pub exit_key: u16,
+    pub fast_key: u16,
+    pub slow_key: u16,
+    pub freecam_key: u16,
 }
 
 impl Default for KeybindsConfig {
@@ -40,6 +43,31 @@ impl Default for KeybindsConfig {
     }
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct AddressConfig {
+    pub battle_pointer: NonNullPtr<u32>,
+    pub target_x: NonNullPtr<f32>,
+    pub target_y: NonNullPtr<f32>,
+    pub target_z: NonNullPtr<f32>,
+    pub camera_x: NonNullPtr<f32>,
+    pub camera_y: NonNullPtr<f32>,
+    pub camera_z: NonNullPtr<f32>,
+}
+
+impl Default for AddressConfig {
+    fn default() -> Self {
+        Self {
+            battle_pointer: 0x0193D683.into(),
+            target_x: 0x0193D5DC.into(),
+            target_y: 0x0193D5E4.into(),
+            target_z: 0x0193D5E0.into(),
+            camera_x: 0x0193D598.into(),
+            camera_y: 0x0193D5A0.into(),
+            camera_z: 0x0193D59C.into(),
+        }
+    }
+}
+
 impl Default for FreecamConfig {
     fn default() -> Self {
         Self {
@@ -47,6 +75,7 @@ impl Default for FreecamConfig {
             update_rate: 144,
             reload_config_keys: Some(vec![VK_CONTROL.0, VK_SHIFT.0, VK_R.0]),
             keybinds: Default::default(),
+            addresses: Default::default(),
         }
     }
 }
@@ -73,7 +102,7 @@ pub fn create_initial_config(directory: impl AsRef<Path>) -> anyhow::Result<()> 
 }
 
 fn validate_config(config: &FreecamConfig) -> anyhow::Result<()> {
-    let mut errors = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
 
     let error = errors.join("\n");
 
