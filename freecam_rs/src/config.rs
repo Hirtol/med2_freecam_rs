@@ -84,8 +84,6 @@ pub fn load_config(directory: impl AsRef<Path>) -> anyhow::Result<FreecamConfig>
     let file = std::fs::read(directory.as_ref().join(CONFIG_FILE_NAME))?;
     let conf = serde_json::from_slice(&file).context("Failed to read config file, is it valid?")?;
 
-    validate_config(&conf)?;
-
     Ok(conf)
 }
 
@@ -99,16 +97,4 @@ pub fn create_initial_config(directory: impl AsRef<Path>) -> anyhow::Result<()> 
     }
 
     Ok(())
-}
-
-fn validate_config(config: &FreecamConfig) -> anyhow::Result<()> {
-    let mut errors: Vec<String> = Vec::new();
-
-    let error = errors.join("\n");
-
-    if error.is_empty() {
-        Ok(())
-    } else {
-        Err(anyhow::Error::msg(error))
-    }
 }

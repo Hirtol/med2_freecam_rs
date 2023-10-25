@@ -8,6 +8,7 @@ use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
 use crate::config::FreecamConfig;
+use crate::mouse::ScrollTracker;
 
 mod config;
 mod mouse;
@@ -20,7 +21,7 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
     let cfg = simplelog::ConfigBuilder::new().build();
 
     // Ignore result in case we have double initialisation of the DLL.
-    let _ = simplelog::SimpleLogger::init(LevelFilter::Trace, cfg)?;
+    simplelog::SimpleLogger::init(LevelFilter::Trace, cfg)?;
 
     config::create_initial_config(config_directory)?;
 
@@ -37,6 +38,7 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
     let mut key_manager = KeyboardManager::new();
     let mut update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
     let patcher = rust_hooking_utils::patching::LocalPatcher::new();
+    let mut scroll_tracker = ScrollTracker::new()?;
 
     while !SHUTDOWN_FLAG.load(Ordering::Acquire) {
         if let Some(reload) = &conf.reload_config_keys {
@@ -47,8 +49,12 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
             unsafe {
                 let camera_x = patcher.read(conf.addresses.camera_x.as_ref());
-
-                log::trace!("Camera x position: {camera_x}");
+                log::trace!(
+                    "Scroll Position: {} - Delta: {}",
+                    scroll_tracker.get_scroll(),
+                    scroll_tracker.get_scroll_delta()
+                )
+                // log::trace!("Camera x position: {camera_x}");
             }
         }
 
@@ -73,11 +79,11 @@ fn reload_config(config_dir: impl AsRef<Path>, old: &FreecamConfig) -> anyhow::R
     // Open/close console
     if old.console && !conf.console {
         unsafe {
-            windows::Win32::System::Console::FreeConsole();
+            windows::Win32::System::Console::FreeConsole()?;
         }
     } else if !old.console && conf.console {
         unsafe {
-            windows::Win32::System::Console::AllocConsole();
+            windows::Win32::System::Console::AllocConsole()?;
         }
     }
 

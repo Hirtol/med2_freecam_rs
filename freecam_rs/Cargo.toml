@@ -9,11 +9,11 @@ simplelog = "0.12"
 anyhow = "1"
 once_cell = "1.18"
 
-retour = "0.4.0-alpha.1"
+retour = { version = "0.4.0-alpha.1", features = ["static-detour"] }
 
 rust_hooking_utils.workspace = true
 
-windows = {workspace = true, features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Performance", "Win32_UI_Input_KeyboardAndMouse"]}
+windows = {workspace = true, features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Performance", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"]}
 windows-sys = { version = "0.48.0", features = ["Win32_Foundation", "Win32_System_Performance", "Win32_System_SystemInformation"] }
 
 serde = { version = "1", features = ["derive"] }
