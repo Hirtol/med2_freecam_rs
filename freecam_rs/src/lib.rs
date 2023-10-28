@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::battle_cam::BattleCamState;
 use anyhow::{Context, Result};
 use log::LevelFilter;
 use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
@@ -11,8 +12,12 @@ use crate::config::FreecamConfig;
 use crate::mouse::ScrollTracker;
 
 mod config;
+mod data;
 mod mouse;
 mod ptr;
+
+mod battle_cam;
+
 static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
 
 pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> {
@@ -37,8 +42,11 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     let mut key_manager = KeyboardManager::new();
     let mut update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
-    let patcher = rust_hooking_utils::patching::LocalPatcher::new();
     let mut scroll_tracker = ScrollTracker::new()?;
+    let mut battle_cam = BattleCamState::new();
+    let patcher = rust_hooking_utils::patching::LocalPatcher::new();
+
+    let mut last_update = Instant::now();
 
     while !SHUTDOWN_FLAG.load(Ordering::Acquire) {
         if let Some(reload) = &conf.reload_config_keys {
@@ -48,14 +56,16 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
             }
 
             unsafe {
-                let camera_x = patcher.read(conf.addresses.camera_x.as_ref());
-                log::trace!(
-                    "Scroll Position: {} - Delta: {}",
-                    scroll_tracker.get_scroll(),
-                    scroll_tracker.get_scroll_delta()
-                )
-                // log::trace!("Camera x position: {camera_x}");
+                battle_cam.run(
+                    &patcher,
+                    &mut scroll_tracker,
+                    &mut key_manager,
+                    last_update.elapsed(),
+                    &mut conf,
+                )?;
             }
+
+            last_update = Instant::now();
         }
 
         std::thread::sleep(update_duration);
