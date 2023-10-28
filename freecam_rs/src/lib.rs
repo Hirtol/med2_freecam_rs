@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use crate::battle_cam::BattleCamState;
 use anyhow::{Context, Result};
 use log::LevelFilter;
+use rust_hooking_utils::patching::LocalPatcher;
 use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
 use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
 
@@ -17,6 +18,7 @@ mod mouse;
 mod ptr;
 
 mod battle_cam;
+mod patch_locations;
 
 static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
 
@@ -43,21 +45,21 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
     let mut key_manager = KeyboardManager::new();
     let mut update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
     let mut scroll_tracker = ScrollTracker::new()?;
-    let mut battle_cam = BattleCamState::new();
-    let patcher = rust_hooking_utils::patching::LocalPatcher::new();
+    let mut patcher = rust_hooking_utils::patching::LocalPatcher::new();
+    let mut battle_cam = BattleCamState::new(&mut conf, &mut patcher);
 
     let mut last_update = Instant::now();
 
     while !SHUTDOWN_FLAG.load(Ordering::Acquire) {
         if let Some(reload) = &conf.reload_config_keys {
             if key_manager.all_pressed(reload.iter().copied().map(VIRTUAL_KEY)) {
-                conf = reload_config(config_directory, &conf)?;
+                conf = reload_config(config_directory, &mut conf, &mut patcher)?;
                 update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
             }
 
             unsafe {
                 battle_cam.run(
-                    &patcher,
+                    &mut patcher,
                     &mut scroll_tracker,
                     &mut key_manager,
                     last_update.elapsed(),
@@ -82,9 +84,13 @@ pub fn dll_detach(_hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()>
     Ok(())
 }
 
-fn reload_config(config_dir: impl AsRef<Path>, old: &FreecamConfig) -> anyhow::Result<FreecamConfig> {
+fn reload_config(
+    config_dir: impl AsRef<Path>,
+    old: &mut FreecamConfig,
+    patcher: &mut LocalPatcher,
+) -> anyhow::Result<FreecamConfig> {
     log::debug!("Reloading config");
-    let conf = config::load_config(config_dir)?;
+    let mut conf = config::load_config(config_dir)?;
 
     // Open/close console
     if old.console && !conf.console {
@@ -94,6 +100,33 @@ fn reload_config(config_dir: impl AsRef<Path>, old: &FreecamConfig) -> anyhow::R
     } else if !old.console && conf.console {
         unsafe {
             windows::Win32::System::Console::AllocConsole()?;
+        }
+    }
+
+    if old.patch_locations != conf.patch_locations {
+        unsafe {
+            for new_patch in conf.patch_locations.iter_mut() {
+                if !old.patch_locations.contains(new_patch) {
+                    // Newly added patch
+                    patch_locations::patch_logic(new_patch, patcher);
+                }
+            }
+            for old_patch in old.patch_locations.iter_mut() {
+                if !conf.patch_locations.contains(old_patch) {
+                    // Removed patch
+                    patcher.unpatch(old_patch.as_mut())
+                }
+            }
+        }
+    }
+
+    if old.camera.custom_camera_enabled && !conf.camera.custom_camera_enabled {
+        unsafe {
+            patcher.disable_all_patches();
+        }
+    } else if !old.camera.custom_camera_enabled && conf.camera.custom_camera_enabled {
+        unsafe {
+            patcher.enable_all_patches();
         }
     }
 

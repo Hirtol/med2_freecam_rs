@@ -4,7 +4,7 @@ use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
-#[derive(serde::Deserialize, Clone, Copy)]
+#[derive(serde::Deserialize, Clone, Copy, PartialEq, PartialOrd)]
 #[serde(transparent)]
 pub struct NonNullPtr<T = u8>(#[serde(deserialize_with = "from_hex")] pub NonNull<T>);
 

@@ -4,8 +4,11 @@
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct BattleCameraView {
+    /// 0x0193D598
     pub x_coord: f32,
+    /// 0x0193D5A0
     pub z_coord: f32,
+    /// 0x0193D59C
     pub y_coord: f32,
 }
 
@@ -13,8 +16,11 @@ pub struct BattleCameraView {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct BattleCameraTargetView {
+    /// 0x0193D5DC
     pub x_coord: f32,
+    /// 0x0193D5E0
     pub z_coord: f32,
+    /// 0x0193D5E4
     pub y_coord: f32,
 }
 

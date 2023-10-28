@@ -5,6 +5,7 @@ use anyhow::Context;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_R, VK_SHIFT};
 
 use crate::data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
+use crate::patch_locations::PATCH_LOCATIONS_STEAM;
 use crate::ptr::NonNullPtr;
 
 pub const CONFIG_FILE_NAME: &str = "freecam_config.json";
@@ -23,22 +24,52 @@ pub struct FreecamConfig {
     /// Any camera other than the `TotalWarCamera` (index 0) tends to bug out when going to a different unit.
     ///
     /// Forcing an override on every game start seems the most logical.
-    pub override_default_camera: bool,
+    pub force_ttw_camera: bool,
+    pub patch_locations: Vec<NonNullPtr<u8>>,
 }
+
+// #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, PartialOrd)]
+// pub struct PatchLocation {
+//     pub address: NonNullPtr<u8>,
+// }
+
+// impl PatchLocation {
+//     pub fn new(address: usize) -> Self {
+//         PatchLocation {
+//             address: address.into(),
+//         }
+//     }
+// }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct CameraConfig {
+    pub custom_camera_enabled: bool,
     pub inverted: bool,
+    pub inverted_scroll: bool,
     pub sensitivity: f32,
-    pub smoothing: f32,
+    pub pan_smoothing: f32,
+    pub vertical_smoothing: f32,
+    pub horizontal_smoothing: f32,
+    pub horizontal_base_speed: f32,
+    pub vertical_base_speed: f32,
+    pub slow_multiplier: f32,
+    pub fast_multiplier: f32,
 }
 
 impl Default for CameraConfig {
     fn default() -> Self {
         Self {
+            custom_camera_enabled: true,
             inverted: false,
+            inverted_scroll: true,
             sensitivity: 1.0,
-            smoothing: 0.5,
+            pan_smoothing: 0.5,
+            vertical_smoothing: 0.9,
+            horizontal_smoothing: 0.9,
+            horizontal_base_speed: 1.0,
+            vertical_base_speed: 1.0,
+            fast_multiplier: 3.5,
+            slow_multiplier: 0.5,
         }
     }
 }
@@ -53,6 +84,12 @@ pub struct KeybindsConfig {
     pub fast_key: u16,
     pub slow_key: u16,
     pub freecam_key: u16,
+    pub forward_key: u16,
+    pub backwards_key: u16,
+    pub left_key: u16,
+    pub right_key: u16,
+    pub rotate_left: u16,
+    pub rotate_right: u16,
 }
 
 impl Default for KeybindsConfig {
@@ -63,6 +100,12 @@ impl Default for KeybindsConfig {
             fast_key: 0x10,
             slow_key: 0x12,
             freecam_key: 0x06,
+            forward_key: 0x57,
+            backwards_key: 0x53,
+            left_key: 0x41,
+            right_key: 0x44,
+            rotate_left: 0x51,
+            rotate_right: 0x45,
         }
     }
 }
@@ -70,15 +113,12 @@ impl Default for KeybindsConfig {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct AddressConfig {
     pub battle_cam_conf_type: NonNullPtr<BattleCameraType>,
+    /// Location which indicates whether a battle is currently on-going.
+    ///
+    /// If `!= 0` then it's `true`.
     pub battle_pointer: NonNullPtr<u32>,
-    pub target_x: NonNullPtr<f32>,
-    pub target_y: NonNullPtr<f32>,
-    pub target_z: NonNullPtr<f32>,
     pub battle_cam_addr: NonNullPtr<BattleCameraView>,
     pub battle_cam_target_addr: NonNullPtr<BattleCameraTargetView>,
-    pub camera_x: NonNullPtr<f32>,
-    pub camera_y: NonNullPtr<f32>,
-    pub camera_z: NonNullPtr<f32>,
 }
 
 impl Default for AddressConfig {
@@ -86,14 +126,8 @@ impl Default for AddressConfig {
         Self {
             battle_cam_conf_type: 0x01639F14.into(),
             battle_pointer: 0x0193D683.into(),
-            target_x: 0x0193D5DC.into(),
-            target_y: 0x0193D5E4.into(),
-            target_z: 0x0193D5E0.into(),
             battle_cam_addr: 0x0193D598.into(),
             battle_cam_target_addr: 0x0193D5DC.into(),
-            camera_x: 0x0193D598.into(),
-            camera_y: 0x0193D5A0.into(),
-            camera_z: 0x0193D59C.into(),
         }
     }
 }
@@ -107,7 +141,8 @@ impl Default for FreecamConfig {
             keybinds: Default::default(),
             addresses: Default::default(),
             camera: Default::default(),
-            override_default_camera: true,
+            force_ttw_camera: true,
+            patch_locations: PATCH_LOCATIONS_STEAM.into_iter().map(|loc| loc.into()).collect(),
         }
     }
 }
