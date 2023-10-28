@@ -1,6 +1,6 @@
 // 0x0193D598, seems to represent the true map coordinates when using TotalWar Camera
 // When using RTS/General it seems correlated to BattleCameraPosition in some way (and gets constantly overwritten by values)
-// It seems to act sort of like BattleCameraTargetView when in TotalWar Camera mode.
+// It seems to act sort of like BattleCameraTargetView when in RTS Camera mode.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct BattleCameraView {

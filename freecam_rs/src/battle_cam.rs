@@ -17,7 +17,6 @@ pub struct BattleCamState {
     old_cursor_pos: POINT,
     velocity: Velocity,
     last_left_click: Instant,
-    time_since_start_battle: Option<Instant>,
     /// Used for the custom camera to ensure smooth motion
     custom_camera: CustomCameraState,
 }
@@ -51,19 +50,12 @@ impl BattleCamState {
                 patch_locations::patch_logic(patch, patcher);
             }
         }
-        // Only enable the patches if we're actually going to use the new camera, however.
-        if !conf.camera.custom_camera_enabled {
-            unsafe {
-                patcher.disable_all_patches();
-            }
-        }
 
         Self {
             paused: true,
             old_cursor_pos: point,
             velocity: Default::default(),
             last_left_click: Instant::now(),
-            time_since_start_battle: None,
             custom_camera: Default::default(),
         }
     }
@@ -85,19 +77,12 @@ impl BattleCamState {
             }
 
             if conf.camera.custom_camera_enabled {
-                if let Some(start) = self.time_since_start_battle {
-                    if start.elapsed() > Duration::from_secs(15) {
-                        return self.run_battle_custom_camera(patcher, scroll, key_man, t_delta, conf);
-                    }
-                } else {
-                    self.time_since_start_battle = Some(Instant::now());
-                }
+                return self.run_battle_custom_camera(patcher, scroll, key_man, t_delta, conf);
             } else {
                 return self.run_battle_no_custom(patcher, key_man, t_delta, conf);
             }
         } else {
             // If we're not in battle, obviously do nothing
-            self.time_since_start_battle = None;
             self.pause(true, patcher);
             self.sync_custom_camera(patcher, conf);
         }
@@ -127,8 +112,6 @@ impl BattleCamState {
             let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.pan_smoothing);
             acceleration.pitch -= ((invert * (point.y - self.old_cursor_pos.y) as f32) / 500.) * adjusted_sens;
             acceleration.yaw -= ((invert * (point.x - self.old_cursor_pos.x) as f32) / 500.) * adjusted_sens;
-            // We should have control again.
-            self.pause(false, patcher);
         }
 
         println!(
@@ -142,7 +125,7 @@ impl BattleCamState {
         self.velocity.yaw += acceleration.yaw;
         pitch += self.velocity.pitch;
         yaw += self.velocity.yaw;
-        println!("Pitch: {} - Yaw: {}", pitch, yaw);
+        // println!("Pitch: {} - Yaw: {}", pitch, yaw);
 
         self.velocity.pitch *= conf.camera.pan_smoothing;
         self.velocity.yaw *= conf.camera.pan_smoothing;
@@ -184,10 +167,18 @@ impl BattleCamState {
             let time_since_last = now.duration_since(self.last_left_click);
             self.last_left_click = now;
 
+            println!(
+                "Time since last left: {:#?} and double: {:#?}",
+                time_since_last,
+                GetDoubleClickTime()
+            );
+            println!("Old Cursor: {:#?} - New: {:#?}", self.old_cursor_pos, point);
+
             if (time_since_last.as_millis() as u32) < GetDoubleClickTime()
-                && self.old_cursor_pos.x.min(point.x).abs() < 10
-                && self.old_cursor_pos.y.min(point.y).abs() < 10
+                && (self.old_cursor_pos.x - point.x).abs() < 10
+                && (self.old_cursor_pos.y - point.y).abs() < 10
             {
+                println!("Pausing!");
                 self.pause(true, patcher);
             }
         }
@@ -267,13 +258,13 @@ impl BattleCamState {
         self.velocity.pitch *= conf.camera.pan_smoothing;
         self.velocity.yaw *= conf.camera.pan_smoothing;
 
-        println!(
-            "In battle! {:#?} - {:#?}",
-            patcher.read(conf.addresses.battle_cam_addr.as_ref()),
-            patcher.read(conf.addresses.battle_cam_target_addr.as_ref())
-        );
-
-        println!("Pitch: {} - Yaw: {}", pitch, yaw);
+        // println!(
+        //     "In battle! {:#?} - {:#?}",
+        //     patcher.read(conf.addresses.battle_cam_addr.as_ref()),
+        //     patcher.read(conf.addresses.battle_cam_target_addr.as_ref())
+        // );
+        //
+        // println!("Pitch: {} - Yaw: {}", pitch, yaw);
 
         self.custom_camera.x = 900.0f32.min((-900.0f32).max(self.custom_camera.x));
         self.custom_camera.y = 900.0f32.min((-900.0f32).max(self.custom_camera.y));

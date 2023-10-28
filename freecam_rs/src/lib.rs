@@ -124,10 +124,6 @@ fn reload_config(
         unsafe {
             patcher.disable_all_patches();
         }
-    } else if !old.camera.custom_camera_enabled && conf.camera.custom_camera_enabled {
-        unsafe {
-            patcher.enable_all_patches();
-        }
     }
 
     log::debug!("New config loaded: {:#?}", conf);

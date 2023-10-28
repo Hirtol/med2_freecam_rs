@@ -22,5 +22,7 @@ pub unsafe fn patch_logic(address: &mut NonNullPtr<u8>, patcher: &mut LocalPatch
     //The 243 or F3 byte means that the operatation in total is 5 bytes long.
     //Otherwise the operation is 3 bytes long. This works for this program as these are the only possibilities
     let to_patch = vec![144; length];
-    patcher.patch(address.as_mut(), &to_patch);
+
+    // Don't immediately activate the patches, causes crashes.
+    patcher.patch(address.as_mut(), &to_patch, false);
 }
