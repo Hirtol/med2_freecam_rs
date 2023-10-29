@@ -23,6 +23,9 @@ pub struct BattleCamState {
     custom_camera: CustomCameraState,
     is_moving_toward_unit: bool,
     remote_z_max: Arc<AtomicU32>,
+    /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
+    z_diff: f32,
+    minimal_z: f32,
 }
 
 #[derive(Default)]
@@ -62,7 +65,7 @@ impl BattleCamState {
         let address_to_patch_2 = 0x008F9439;
         let address = (remote_value.as_ptr() as u32).to_le_bytes();
         // 0:  52                      push   edx
-        // 1:  ba 11 23 67 80          mov    edx,0x80672311
+        // 1:  ba 11 23 67 80          mov    edx,ADDRESS
         // 6:  f3 0f 11 0a             movss  DWORD PTR [edx],xmm1
         // a:  5a                      pop    edx
         let mut assembly_patch = [
@@ -96,6 +99,8 @@ impl BattleCamState {
             custom_camera: Default::default(),
             is_moving_toward_unit: false,
             remote_z_max: remote_value,
+            z_diff: 0.0,
+            minimal_z: 0.0,
         }
     }
 
@@ -275,7 +280,7 @@ impl BattleCamState {
 
         // Handle scroll TODO: Figure out how this works.
         let scroll_delta = scroll.get_scroll_delta() * if conf.camera.inverted_scroll { -1 } else { 1 };
-
+        let did_scroll = scroll_delta != 0;
         let is_negative = if scroll_delta != 0 { scroll_delta.abs() / scroll_delta } else { 1 };
         self.velocity.z += (scroll_delta.pow(2) * is_negative) as f32 * vertical_speed / 10.;
 
@@ -300,21 +305,43 @@ impl BattleCamState {
         self.custom_camera.pitch += self.velocity.pitch;
         self.custom_camera.yaw += self.velocity.yaw;
 
+        if conf.camera.maintain_relative_height {
+            let new_z_diff = self.custom_camera.z - f32::from_bits(self.remote_z_max.load(Ordering::SeqCst));
+            println!(
+                "New Z Diff: {} - Z Diff {} - Velocity: {}",
+                new_z_diff, self.z_diff, self.velocity.z
+            );
+
+            if self.velocity.z.abs() > f32::EPSILON {
+                self.z_diff = new_z_diff;
+            } else if new_z_diff < self.z_diff {
+                self.custom_camera.z += self.z_diff - new_z_diff;
+            } else if new_z_diff > self.z_diff {
+                self.custom_camera.z -= new_z_diff - self.z_diff;
+            }
+        }
+
         // If we're below the ground we should probably move up!
         // This isn't a perfect solution, as one can still clip a bit, but floating a set amount above the ground kinda ruins the point.
-        let z_bound = f32::from_bits(self.remote_z_max.load(Ordering::SeqCst));
-        let multiplier = if z_bound.is_sign_positive() { -1. } else { 1. };
-        if z_bound > 0.
-            && !z_bound.is_nan()
-            && z_bound.is_finite()
-            && ((self.custom_camera.z - z_bound) < (multiplier * 3.5))
-        {
-            let difference = (self.custom_camera.z - z_bound).abs();
-            self.velocity.z = difference * 0.05;
-            self.custom_camera.z += difference - 3.5;
-            // self.custom_camera.z += self.velocity.z;
+        if conf.camera.prevent_ground_clipping {
+            let z_bound = f32::from_bits(self.remote_z_max.load(Ordering::SeqCst));
+            let mut still_changing = false;
+            // Ensure there's still changes happening
+            if (self.minimal_z - z_bound).abs() > f32::EPSILON {
+                self.minimal_z = z_bound;
+                still_changing = true;
+            }
+
+            let multiplier = if z_bound.is_sign_positive() { -1. } else { 1. };
+            if !still_changing
+                && self.minimal_z != 0.
+                && !z_bound.is_nan()
+                && z_bound.is_finite()
+                && ((self.custom_camera.z - self.minimal_z) < (multiplier * 2.1))
+            {
+                self.custom_camera.z = (self.minimal_z + (multiplier * 2.1)).max(self.custom_camera.z);
+            }
         }
-        // TODO: Take the difference between self.custom_camera.z - z_bound and keep that constant (should automatically adjust to rising/falling heights.
 
         self.velocity.x *= conf.camera.horizontal_smoothing;
         self.velocity.y *= conf.camera.horizontal_smoothing;
@@ -343,8 +370,6 @@ impl BattleCamState {
         } else {
             // Update
             self.sync_custom_camera(patcher, conf);
-            self.remote_z_max
-                .store(self.custom_camera.z.to_bits(), Ordering::SeqCst);
         }
 
         // Persist info for next loop
@@ -372,6 +397,10 @@ impl BattleCamState {
         self.custom_camera.x = camera_pos.x_coord;
         self.custom_camera.y = camera_pos.y_coord;
         self.custom_camera.z = camera_pos.z_coord;
+        self.z_diff = 0.;
+        self.minimal_z = 0.;
+        self.remote_z_max
+            .store(self.custom_camera.z.to_bits(), Ordering::SeqCst);
         self.custom_camera.pitch = pitch;
         self.custom_camera.yaw = yaw;
     }

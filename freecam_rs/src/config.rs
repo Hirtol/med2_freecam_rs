@@ -54,6 +54,10 @@ pub struct CameraConfig {
     pub vertical_base_speed: f32,
     pub slow_multiplier: f32,
     pub fast_multiplier: f32,
+    /// Whether to remain at a consistent height level above the terrain when moving the camera.
+    pub maintain_relative_height: bool,
+    /// Whether to try to prevent the camera from clipping through the ground.
+    pub prevent_ground_clipping: bool,
 }
 
 impl Default for CameraConfig {
@@ -69,7 +73,9 @@ impl Default for CameraConfig {
             horizontal_base_speed: 1.0,
             vertical_base_speed: 1.0,
             fast_multiplier: 3.5,
+            maintain_relative_height: true,
             slow_multiplier: 0.5,
+            prevent_ground_clipping: true,
         }
     }
 }
