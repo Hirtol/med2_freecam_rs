@@ -1,4 +1,6 @@
 use std::f32::consts::PI;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rust_hooking_utils::patching::LocalPatcher;
@@ -19,6 +21,8 @@ pub struct BattleCamState {
     last_left_click: Instant,
     /// Used for the custom camera to ensure smooth motion
     custom_camera: CustomCameraState,
+    is_moving_toward_unit: bool,
+    remote_z_max: Arc<AtomicU32>,
 }
 
 #[derive(Default)]
@@ -51,12 +55,47 @@ impl BattleCamState {
             }
         }
 
+        let remote_value = Arc::new(AtomicU32::default());
+        // One of the `movss` which moved values to the battlecam address _anyway_
+        // We have 15 bytes of `nops` atm at that address.
+        let address_to_patch = 0x008F8C6C;
+        let address_to_patch_2 = 0x008F9439;
+        let address = (remote_value.as_ptr() as u32).to_le_bytes();
+        // 0:  52                      push   edx
+        // 1:  ba 11 23 67 80          mov    edx,0x80672311
+        // 6:  f3 0f 11 0a             movss  DWORD PTR [edx],xmm1
+        // a:  5a                      pop    edx
+        let mut assembly_patch = [
+            0x52, 0xBA, address[0], address[1], address[2], address[3], 0xF3, 0x0F, 0x11, 0x0A, 0x5A,
+        ];
+
+        unsafe { patcher.patch(address_to_patch as *mut u8, &assembly_patch, false) }
+        // 6:  f3 0f 11 02             movss  DWORD PTR [edx],xmm0
+        assembly_patch[9] = 0x02;
+        unsafe { patcher.patch(address_to_patch_2 as *mut u8, &assembly_patch, false) }
+
+        // TODO: Do the same above thing, but for _all_ pointers instead of `NOPing`  them
+        // At the very least do the numbered ones here, as they're the ones which `teleport` us when double clicking a unit!
+        // ALSO TODO: Remove the below from the standard patch list!
+        // 52     "0x8F8E8B",
+        //     "0x95B7F4",
+        //
+        //
+        // 66     "0x8F8E97",
+        //     "0x95B805",
+        //
+        //
+        // 82     "0x8F8E91",
+        //     "0x95B7FC",
+
         Self {
             paused: true,
             old_cursor_pos: point,
             velocity: Default::default(),
             last_left_click: Instant::now(),
             custom_camera: Default::default(),
+            is_moving_toward_unit: false,
+            remote_z_max: remote_value,
         }
     }
 
@@ -179,8 +218,16 @@ impl BattleCamState {
                 && (self.old_cursor_pos.y - point.y).abs() < 10
             {
                 println!("Pausing!");
+                self.is_moving_toward_unit = true;
                 self.pause(true, patcher);
             }
+        }
+
+        if (self.custom_camera.x - camera_pos.x_coord).abs() > f32::EPSILON
+            || (self.custom_camera.y - camera_pos.y_coord).abs() > f32::EPSILON
+            || (self.custom_camera.z - camera_pos.z_coord).abs() > f32::EPSILON
+        {
+            self.sync_custom_camera(patcher, conf);
         }
 
         // Adjust based on free-cam movement
@@ -228,6 +275,7 @@ impl BattleCamState {
 
         // Handle scroll TODO: Figure out how this works.
         let scroll_delta = scroll.get_scroll_delta() * if conf.camera.inverted_scroll { -1 } else { 1 };
+
         let is_negative = if scroll_delta != 0 { scroll_delta.abs() / scroll_delta } else { 1 };
         self.velocity.z += (scroll_delta.pow(2) * is_negative) as f32 * vertical_speed / 10.;
 
@@ -252,6 +300,22 @@ impl BattleCamState {
         self.custom_camera.pitch += self.velocity.pitch;
         self.custom_camera.yaw += self.velocity.yaw;
 
+        // If we're below the ground we should probably move up!
+        // This isn't a perfect solution, as one can still clip a bit, but floating a set amount above the ground kinda ruins the point.
+        let z_bound = f32::from_bits(self.remote_z_max.load(Ordering::SeqCst));
+        let multiplier = if z_bound.is_sign_positive() { -1. } else { 1. };
+        if z_bound > 0.
+            && !z_bound.is_nan()
+            && z_bound.is_finite()
+            && ((self.custom_camera.z - z_bound) < (multiplier * 3.5))
+        {
+            let difference = (self.custom_camera.z - z_bound).abs();
+            self.velocity.z = difference * 0.05;
+            self.custom_camera.z += difference - 3.5;
+            // self.custom_camera.z += self.velocity.z;
+        }
+        // TODO: Take the difference between self.custom_camera.z - z_bound and keep that constant (should automatically adjust to rising/falling heights.
+
         self.velocity.x *= conf.camera.horizontal_smoothing;
         self.velocity.y *= conf.camera.horizontal_smoothing;
         self.velocity.z *= conf.camera.vertical_smoothing;
@@ -266,6 +330,8 @@ impl BattleCamState {
         //
         // println!("Pitch: {} - Yaw: {}", pitch, yaw);
 
+        println!("Raw Z: {}", f32::from_bits(self.remote_z_max.load(Ordering::SeqCst)));
+
         self.custom_camera.x = 900.0f32.min((-900.0f32).max(self.custom_camera.x));
         self.custom_camera.y = 900.0f32.min((-900.0f32).max(self.custom_camera.y));
 
@@ -277,6 +343,8 @@ impl BattleCamState {
         } else {
             // Update
             self.sync_custom_camera(patcher, conf);
+            self.remote_z_max
+                .store(self.custom_camera.z.to_bits(), Ordering::SeqCst);
         }
 
         // Persist info for next loop
