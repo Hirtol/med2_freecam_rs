@@ -25,6 +25,7 @@ pub struct BattleCamState {
     remote_z_max: Arc<AtomicU32>,
     /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
     z_diff: f32,
+    /// The lowest bound for Z at a particular point in time to prevent the camera from sinking below the terrain.
     minimal_z: f32,
 }
 
@@ -123,17 +124,16 @@ impl BattleCamState {
             }
 
             if conf.camera.custom_camera_enabled {
-                return self.run_battle_custom_camera(patcher, scroll, key_man, t_delta, conf);
+                self.run_battle_custom_camera(patcher, scroll, key_man, t_delta, conf)
             } else {
-                return self.run_battle_no_custom(patcher, key_man, t_delta, conf);
+                self.run_battle_no_custom(patcher, key_man, t_delta, conf)
             }
         } else {
             // If we're not in battle, obviously do nothing
             self.pause(true, patcher);
             self.sync_custom_camera(patcher, conf);
+            Ok(())
         }
-
-        Ok(())
     }
 
     pub unsafe fn run_battle_no_custom(
@@ -145,33 +145,21 @@ impl BattleCamState {
     ) -> anyhow::Result<()> {
         let target_pos = patcher.mut_read(conf.addresses.battle_cam_target_addr.as_mut());
         let camera_pos = patcher.mut_read(conf.addresses.battle_cam_addr.as_mut());
-        let mut acceleration = Velocity::default();
+        let mut acceleration = Acceleration::default();
 
-        let (_, mut pitch, mut yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
+        let (mut pitch, mut yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
 
         let mut point = POINT::default();
         GetCursorPos(&mut point)?;
 
         // Adjust based on free-cam movement
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.freecam_key)) {
-            let invert = if conf.camera.inverted { -1.0 } else { 1.0 };
-            let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.pan_smoothing);
-            acceleration.pitch -= ((invert * (point.y - self.old_cursor_pos.y) as f32) / 500.) * adjusted_sens;
-            acceleration.yaw -= ((invert * (point.x - self.old_cursor_pos.x) as f32) / 500.) * adjusted_sens;
-        }
-
-        println!(
-            "In battle! {:#?} - {:#?}",
-            patcher.read(conf.addresses.battle_cam_addr.as_ref()),
-            patcher.read(conf.addresses.battle_cam_target_addr.as_ref())
-        );
+        self.bc_handle_panning(patcher, key_man, conf, &mut acceleration, point);
 
         // Adjust pitch and yaw
         self.velocity.pitch += acceleration.pitch;
         self.velocity.yaw += acceleration.yaw;
         pitch += self.velocity.pitch;
         yaw += self.velocity.yaw;
-        // println!("Pitch: {} - Yaw: {}", pitch, yaw);
 
         self.velocity.pitch *= conf.camera.pan_smoothing;
         self.velocity.yaw *= conf.camera.pan_smoothing;
@@ -219,7 +207,7 @@ impl BattleCamState {
         self.bc_handle_left_click(patcher, key_man, point);
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(patcher, key_man, conf, &mut acceleration, &mut point);
+        self.bc_handle_panning(patcher, key_man, conf, &mut acceleration, point);
 
         // Camera movement
         self.bc_move_camera(patcher, key_man, conf, &mut acceleration);
@@ -285,7 +273,7 @@ impl BattleCamState {
         key_man: &mut KeyboardManager,
         conf: &mut FreecamConfig,
         acceleration: &mut Velocity,
-        point: &mut POINT,
+        point: POINT,
     ) {
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.freecam_key)) {
             let invert = if conf.camera.inverted { -1.0 } else { 1.0 };
@@ -434,7 +422,7 @@ impl BattleCamState {
         let target_pos = patcher.mut_read(conf.addresses.battle_cam_target_addr.as_mut());
         let camera_pos = patcher.mut_read(conf.addresses.battle_cam_addr.as_mut());
 
-        let (_, pitch, yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
+        let (pitch, yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
 
         self.custom_camera.x = camera_pos.x_coord;
         self.custom_camera.y = camera_pos.y_coord;
@@ -463,7 +451,7 @@ fn write_custom_camera(custom_cam: &CustomCameraState, camera_pos: &mut BattleCa
     camera_pos.z_coord = custom_cam.z;
 }
 
-fn calculate_length_pitch_yaw(camera_pos: &BattleCameraView, target_pos: &BattleCameraTargetView) -> (f32, f32, f32) {
+fn calculate_length_pitch_yaw(camera_pos: &BattleCameraView, target_pos: &BattleCameraTargetView) -> (f32, f32) {
     let length = ((target_pos.x_coord - camera_pos.x_coord).powi(2)
         + (target_pos.y_coord - camera_pos.y_coord).powi(2)
         + (target_pos.z_coord - camera_pos.z_coord).powi(2))
@@ -480,7 +468,7 @@ fn calculate_length_pitch_yaw(camera_pos: &BattleCameraView, target_pos: &Battle
         yaw = 0.;
     }
 
-    (length, pitch, yaw)
+    (pitch, yaw)
 }
 
 fn calculate_speed_multipliers(conf: &FreecamConfig, key_man: &mut KeyboardManager) -> (f32, f32) {
