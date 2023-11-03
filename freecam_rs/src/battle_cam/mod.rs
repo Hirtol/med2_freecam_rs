@@ -17,7 +17,7 @@ use crate::patcher::LocalPatcher;
 
 type Acceleration = Velocity;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Velocity {
     x: f32,
     y: f32,
@@ -366,10 +366,6 @@ impl BattleState {
         if conf.camera.maintain_relative_height {
             let new_z_diff =
                 self.custom_camera.z - f32::from_bits(self.battle_patcher.maintain_z.remote_z.load(Ordering::SeqCst));
-            // println!(
-            //     "New Z Diff: {} - Z Diff {} - Velocity: {}",
-            //     new_z_diff, self.z_diff, self.velocity.z
-            // );
 
             if self.velocity.z.abs() > f32::EPSILON {
                 self.z_diff = new_z_diff;
