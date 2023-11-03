@@ -1,37 +1,23 @@
 use std::f32::consts::PI;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rust_hooking_utils::patching::LocalPatcher;
 use rust_hooking_utils::raw_input::key_manager::{KeyState, KeyboardManager};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
+use crate::battle_cam::special_patches::{Behaviour, MaintainZHeightBehaviour};
 use crate::config::FreecamConfig;
 use crate::data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 use crate::mouse::ScrollTracker;
 use crate::patch_locations;
-
-pub struct BattleCamState {
-    paused: bool,
-    old_cursor_pos: POINT,
-    velocity: Velocity,
-    last_left_click: Instant,
-    /// Used for the custom camera to ensure smooth motion
-    custom_camera: CustomCameraState,
-    is_moving_toward_unit: bool,
-    remote_z_max: Arc<AtomicU32>,
-    /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
-    z_diff: f32,
-    /// The lowest bound for Z at a particular point in time to prevent the camera from sinking below the terrain.
-    minimal_z: f32,
-}
+use crate::patcher::LocalPatcher;
 
 type Acceleration = Velocity;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Velocity {
     x: f32,
     y: f32,
@@ -49,102 +35,137 @@ struct CustomCameraState {
     yaw: f32,
 }
 
-impl BattleCamState {
-    pub fn new(conf: &mut FreecamConfig, patcher: &mut LocalPatcher) -> Self {
-        let mut point = POINT::default();
-        let _ = unsafe { GetCursorPos(&mut point) };
+pub struct BattleCamera {
+    current_state: BattleCameraState,
+    patcher: LocalPatcher,
+}
 
-        // Always initialise our patcher with all the requisite patches.
-        for patch in conf.patch_locations.iter_mut() {
-            unsafe {
-                patch_locations::patch_logic(patch, patcher);
-            }
-        }
+pub enum BattleCameraState {
+    OutsideBattle,
+    InBattle(BattleState),
+}
 
-        let remote_value = Arc::new(AtomicU32::default());
-        // One of the `movss` which moved values to the battlecam address _anyway_
-        // We have 15 bytes of `nops` atm at that address.
-        let address_to_patch = 0x008F8C6C;
-        let address_to_patch_2 = 0x008F9439;
-        let address = (remote_value.as_ptr() as u32).to_le_bytes();
-        // 0:  52                      push   edx
-        // 1:  ba 11 23 67 80          mov    edx,ADDRESS
-        // 6:  f3 0f 11 0a             movss  DWORD PTR [edx],xmm1
-        // a:  5a                      pop    edx
-        let mut assembly_patch = [
-            0x52, 0xBA, address[0], address[1], address[2], address[3], 0xF3, 0x0F, 0x11, 0x0A, 0x5A,
-        ];
-
-        unsafe { patcher.patch(address_to_patch as *mut u8, &assembly_patch, false) }
-        // 6:  f3 0f 11 02             movss  DWORD PTR [edx],xmm0
-        assembly_patch[9] = 0x02;
-        unsafe { patcher.patch(address_to_patch_2 as *mut u8, &assembly_patch, false) }
-
-        // TODO: Do the same above thing, but for _all_ pointers instead of `NOPing`  them
-        // At the very least do the numbered ones here, as they're the ones which `teleport` us when double clicking a unit!
-        // ALSO TODO: Remove the below from the standard patch list!
-        // 52     "0x8F8E8B",
-        //     "0x95B7F4",
-        //
-        //
-        // 66     "0x8F8E97",
-        //     "0x95B805",
-        //
-        //
-        // 82     "0x8F8E91",
-        //     "0x95B7FC",
-
+impl BattleCamera {
+    pub fn new(patcher: LocalPatcher) -> Self {
         Self {
-            paused: true,
-            old_cursor_pos: point,
-            velocity: Default::default(),
-            last_left_click: Instant::now(),
-            custom_camera: Default::default(),
-            is_moving_toward_unit: false,
-            remote_z_max: remote_value,
-            z_diff: 0.0,
-            minimal_z: 0.0,
+            current_state: BattleCameraState::OutsideBattle,
+            patcher,
         }
     }
 
     pub unsafe fn run(
         &mut self,
-        patcher: &mut LocalPatcher,
+        conf: &mut FreecamConfig,
+        scroll: &mut ScrollTracker,
+        key_man: &mut KeyboardManager,
+        t_delta: Duration,
+    ) -> anyhow::Result<()> {
+        let in_battle = *self.patcher.read(conf.addresses.battle_pointer.as_ref()) != 0;
+
+        // Handle state transitions
+        match self.current_state {
+            BattleCameraState::OutsideBattle if in_battle => {
+                self.current_state = BattleCameraState::InBattle(BattleState::new(conf));
+                Ok(())
+            }
+            BattleCameraState::InBattle(ref mut state) if in_battle => state.run(scroll, key_man, t_delta, conf),
+            BattleCameraState::InBattle(_) if !in_battle => {
+                // Transition out of battle, drop implementations take care of cleanup
+                self.current_state = BattleCameraState::OutsideBattle;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Set whether the custom camera is currently enabled or not.
+    ///
+    /// Only really useful for config updates.
+    pub fn set_custom_camera(&mut self, enabled: bool) {
+        match &mut self.current_state {
+            BattleCameraState::OutsideBattle => {}
+            BattleCameraState::InBattle(b_state) => unsafe { b_state.change_camera_state(enabled) },
+        }
+    }
+}
+
+pub struct BattleState {
+    battle_patcher: BattlePatcher,
+
+    custom_camera: CustomCameraState,
+    velocity: Velocity,
+    // Patch related state
+    old_cursor_pos: POINT,
+    last_left_click: Instant,
+    is_moving_toward_unit: bool,
+    /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
+    z_diff: f32,
+    /// The lowest bound for Z at a particular point in time to prevent the camera from sinking below the terrain.
+    minimal_z: f32,
+}
+
+impl BattleState {
+    pub fn new(conf: &mut FreecamConfig) -> Self {
+        let mut point = POINT::default();
+        let _ = unsafe { GetCursorPos(&mut point) };
+
+        Self {
+            battle_patcher: BattlePatcher::new(conf),
+            old_cursor_pos: point,
+            velocity: Default::default(),
+            last_left_click: Instant::now(),
+            custom_camera: Default::default(),
+            is_moving_toward_unit: false,
+            z_diff: 0.0,
+            minimal_z: 0.0,
+        }
+    }
+
+    pub unsafe fn change_camera_state(&mut self, enabled: bool) {
+        if !enabled {
+            self.battle_patcher.change_state(BattlePatchState::NotApplied);
+        }
+    }
+
+    pub unsafe fn run(
+        &mut self,
         scroll: &mut ScrollTracker,
         key_man: &mut KeyboardManager,
         t_delta: Duration,
         conf: &mut FreecamConfig,
     ) -> anyhow::Result<()> {
-        let in_battle = *patcher.read(conf.addresses.battle_pointer.as_ref()) != 0;
-
-        if in_battle {
-            if conf.force_ttw_camera {
-                // Always ensure we're on the TotalWar cam
-                patcher.write(conf.addresses.battle_cam_conf_type.as_mut(), BattleCameraType::TotalWar);
-            }
-
-            if conf.camera.custom_camera_enabled {
-                self.run_battle_custom_camera(patcher, scroll, key_man, t_delta, conf)
-            } else {
-                self.run_battle_no_custom(patcher, key_man, t_delta, conf)
-            }
+        if conf.force_ttw_camera {
+            // Always ensure we're on the TotalWar cam
+            self.battle_patcher
+                .patcher
+                .write(conf.addresses.battle_cam_conf_type.as_mut(), BattleCameraType::TotalWar);
+        }
+        println!(
+            "Atomic Ptr: {:#X?} - Arc Ptr: {:#X?}",
+            self.battle_patcher.maintain_z.remote_z.as_ptr() as usize,
+            Arc::as_ptr(&self.battle_patcher.maintain_z.remote_z)
+        );
+        if !conf.camera.custom_camera_enabled {
+            self.run_battle_no_custom(key_man, t_delta, conf)
         } else {
-            // If we're not in battle, obviously do nothing
-            self.pause(true, patcher);
-            self.sync_custom_camera(patcher, conf);
-            Ok(())
+            self.run_battle_custom_camera(scroll, key_man, t_delta, conf)
         }
     }
 
     pub unsafe fn run_battle_no_custom(
         &mut self,
-        patcher: &mut LocalPatcher,
         key_man: &mut KeyboardManager,
         t_delta: Duration,
         conf: &mut FreecamConfig,
     ) -> anyhow::Result<()> {
-        let target_pos = patcher.mut_read(conf.addresses.battle_cam_target_addr.as_mut());
-        let camera_pos = patcher.mut_read(conf.addresses.battle_cam_addr.as_mut());
+        let target_pos = self
+            .battle_patcher
+            .patcher
+            .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
+        let camera_pos = self
+            .battle_patcher
+            .patcher
+            .mut_read(conf.addresses.battle_cam_addr.as_mut());
         let mut acceleration = Acceleration::default();
 
         let (mut pitch, mut yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
@@ -153,7 +174,7 @@ impl BattleCamState {
         GetCursorPos(&mut point)?;
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(patcher, key_man, conf, &mut acceleration, point);
+        self.bc_handle_panning(key_man, conf, &mut acceleration, point);
 
         // Adjust pitch and yaw
         self.velocity.pitch += acceleration.pitch;
@@ -165,11 +186,11 @@ impl BattleCamState {
         self.velocity.yaw *= conf.camera.pan_smoothing;
 
         // Write to the addresses
-        if !self.paused {
+        if matches!(self.battle_patcher.state, BattlePatchState::Applied) {
             write_pitch_yaw(camera_pos, target_pos, pitch, yaw);
         } else {
-            // Update
-            self.sync_custom_camera(patcher, conf);
+            // Update our custom camera values.
+            self.sync_custom_camera(conf);
         }
 
         // Persist info for next loop
@@ -179,13 +200,15 @@ impl BattleCamState {
 
     unsafe fn run_battle_custom_camera(
         &mut self,
-        patcher: &mut LocalPatcher,
         scroll: &mut ScrollTracker,
         key_man: &mut KeyboardManager,
         t_delta: Duration,
         conf: &mut FreecamConfig,
     ) -> anyhow::Result<()> {
-        let camera_pos = patcher.mut_read(conf.addresses.battle_cam_addr.as_mut());
+        let camera_pos = self
+            .battle_patcher
+            .patcher
+            .mut_read(conf.addresses.battle_cam_addr.as_mut());
         let mut acceleration = Acceleration::default();
         let (horizontal_speed, vertical_speed) = calculate_speed_multipliers(conf, key_man);
 
@@ -197,26 +220,27 @@ impl BattleCamState {
             || (self.custom_camera.y - camera_pos.y_coord).abs() > f32::EPSILON
             || (self.custom_camera.z - camera_pos.z_coord).abs() > f32::EPSILON
         {
-            self.sync_custom_camera(patcher, conf);
+            self.sync_custom_camera(conf);
         }
 
         // Handle scroll
         self.bc_handle_scroll(scroll, conf, vertical_speed);
 
         // Detect double click (vanilla functionality retention)
-        self.bc_handle_left_click(patcher, key_man, point);
+        self.bc_handle_left_click(key_man, point);
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(patcher, key_man, conf, &mut acceleration, point);
+        self.bc_handle_panning(key_man, conf, &mut acceleration, point);
 
         // Camera movement
-        self.bc_move_camera(patcher, key_man, conf, &mut acceleration);
+        self.bc_move_camera(key_man, conf, &mut acceleration);
 
         // Rotation controls
-        self.bc_handle_rotation(patcher, key_man, conf, &mut acceleration);
+        self.bc_handle_rotation(key_man, conf, &mut acceleration);
 
         // Update velocity based on the new `acceleration`
-        self.bc_calculate_current_velocity(conf, &acceleration, horizontal_speed, vertical_speed);
+        self.velocity =
+            Self::bc_calculate_next_velocity(conf, &self.velocity, &acceleration, horizontal_speed, vertical_speed);
 
         self.custom_camera.x += self.velocity.x;
         self.custom_camera.y += self.velocity.y;
@@ -224,19 +248,23 @@ impl BattleCamState {
         self.custom_camera.pitch += self.velocity.pitch;
         self.custom_camera.yaw += self.velocity.yaw;
 
-        self.bc_smooth_decay_velocity(conf);
+        Self::bc_smooth_decay_velocity(&mut self.velocity, conf);
 
         self.bc_restrict_coordinates(conf);
 
-        if !self.paused {
+        if matches!(self.battle_patcher.state, BattlePatchState::Applied) {
+            println!("WRITING VALUES: {:#?}", self.velocity);
             // Important that this runs _before_ pitch/yaw adjustment as they're dependent.
             write_custom_camera(&self.custom_camera, camera_pos);
 
-            let target_pos = patcher.mut_read(conf.addresses.battle_cam_target_addr.as_mut());
+            let target_pos = self
+                .battle_patcher
+                .patcher
+                .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
             write_pitch_yaw(camera_pos, target_pos, self.custom_camera.pitch, self.custom_camera.yaw);
         } else {
             // Update our custom camera values.
-            self.sync_custom_camera(patcher, conf);
+            self.sync_custom_camera(conf);
         }
 
         // Persist info for next loop
@@ -244,7 +272,7 @@ impl BattleCamState {
         Ok(())
     }
 
-    unsafe fn bc_handle_left_click(&mut self, patcher: &mut LocalPatcher, key_man: &mut KeyboardManager, point: POINT) {
+    unsafe fn bc_handle_left_click(&mut self, key_man: &mut KeyboardManager, point: POINT) {
         if key_man.get_key_state(VK_LBUTTON) == KeyState::Pressed {
             let now = Instant::now();
             let time_since_last = now.duration_since(self.last_left_click);
@@ -255,7 +283,7 @@ impl BattleCamState {
                 && (self.old_cursor_pos.y - point.y).abs() < 10
             {
                 self.is_moving_toward_unit = true;
-                self.pause(true, patcher);
+                self.change_battle_state(true);
             }
         }
     }
@@ -269,25 +297,24 @@ impl BattleCamState {
 
     unsafe fn bc_handle_panning(
         &mut self,
-        patcher: &mut LocalPatcher,
         key_man: &mut KeyboardManager,
         conf: &mut FreecamConfig,
         acceleration: &mut Velocity,
         point: POINT,
     ) {
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.freecam_key)) {
+            println!("Has pressed key PANNING KEY");
             let invert = if conf.camera.inverted { -1.0 } else { 1.0 };
             let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.pan_smoothing);
             acceleration.pitch -= ((invert * (point.y - self.old_cursor_pos.y) as f32) / 500.) * adjusted_sens;
             acceleration.yaw -= ((invert * (point.x - self.old_cursor_pos.x) as f32) / 500.) * adjusted_sens;
             // We should have control again.
-            self.pause(false, patcher);
+            self.change_battle_state(false);
         }
     }
 
     unsafe fn bc_handle_rotation(
         &mut self,
-        patcher: &mut LocalPatcher,
         key_man: &mut KeyboardManager,
         conf: &mut FreecamConfig,
         acceleration: &mut Velocity,
@@ -295,17 +322,16 @@ impl BattleCamState {
         let pan_speed = 1. - conf.camera.pan_smoothing;
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.rotate_left)) {
             acceleration.yaw += 0.03 * pan_speed;
-            self.pause(false, patcher);
+            self.change_battle_state(false);
         }
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.rotate_right)) {
             acceleration.yaw -= 0.03 * pan_speed;
-            self.pause(false, patcher);
+            self.change_battle_state(false);
         }
     }
 
     unsafe fn bc_move_camera(
         &mut self,
-        patcher: &mut LocalPatcher,
         key_man: &mut KeyboardManager,
         conf: &FreecamConfig,
         acceleration: &mut Velocity,
@@ -314,22 +340,22 @@ impl BattleCamState {
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.forward_key)) {
             acceleration.y += yaw.sin();
             acceleration.x += yaw.cos();
-            self.pause(false, patcher);
+            self.change_battle_state(false);
         }
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.backwards_key)) {
             acceleration.y += (PI + yaw).sin();
             acceleration.x += (PI + yaw).cos();
-            self.pause(false, patcher);
+            self.change_battle_state(false);
         }
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.left_key)) {
             acceleration.y += ((PI / 2.) + yaw).sin();
             acceleration.x += ((PI / 2.) + yaw).cos();
-            self.pause(false, patcher);
+            self.change_battle_state(false);
         }
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.right_key)) {
             acceleration.y += ((3. * PI / 2.) + yaw).sin();
             acceleration.x += ((3. * PI / 2.) + yaw).cos();
-            self.pause(false, patcher);
+            self.change_battle_state(false);
         }
     }
 
@@ -338,11 +364,12 @@ impl BattleCamState {
         self.custom_camera.y = 900.0f32.min((-900.0f32).max(self.custom_camera.y));
 
         if conf.camera.maintain_relative_height {
-            let new_z_diff = self.custom_camera.z - f32::from_bits(self.remote_z_max.load(Ordering::SeqCst));
-            println!(
-                "New Z Diff: {} - Z Diff {} - Velocity: {}",
-                new_z_diff, self.z_diff, self.velocity.z
-            );
+            let new_z_diff =
+                self.custom_camera.z - f32::from_bits(self.battle_patcher.maintain_z.remote_z.load(Ordering::SeqCst));
+            // println!(
+            //     "New Z Diff: {} - Z Diff {} - Velocity: {}",
+            //     new_z_diff, self.z_diff, self.velocity.z
+            // );
 
             if self.velocity.z.abs() > f32::EPSILON {
                 self.z_diff = new_z_diff;
@@ -356,7 +383,7 @@ impl BattleCamState {
         // If we're below the ground we should probably move up!
         // This isn't a perfect solution, as one can still clip a bit, but floating a set amount above the ground kinda ruins the point.
         if conf.camera.prevent_ground_clipping {
-            let z_bound = f32::from_bits(self.remote_z_max.load(Ordering::SeqCst));
+            let z_bound = f32::from_bits(self.battle_patcher.maintain_z.remote_z.load(Ordering::SeqCst));
             let mut still_changing = false;
             // Ensure there's still changes happening
             if (self.minimal_z - z_bound).abs() > f32::EPSILON {
@@ -365,8 +392,8 @@ impl BattleCamState {
             }
 
             let multiplier = if z_bound.is_sign_positive() { -1. } else { 1. };
-            if !still_changing
-                && self.minimal_z != 0.
+            // !still_changing
+            if self.minimal_z != 0.
                 && !z_bound.is_nan()
                 && z_bound.is_finite()
                 && ((self.custom_camera.z - self.minimal_z) < (multiplier * 2.1))
@@ -376,51 +403,56 @@ impl BattleCamState {
         }
     }
 
-    unsafe fn bc_calculate_current_velocity(
-        &mut self,
+    unsafe fn bc_calculate_next_velocity(
         conf: &FreecamConfig,
+        current_velocity: &Velocity,
         acceleration: &Acceleration,
         horizontal_speed: f32,
         vertical_speed: f32,
-    ) {
+    ) -> Velocity {
         let mut length = (acceleration.x.powi(2) + acceleration.y.powi(2) + acceleration.z.powi(2)).sqrt();
 
         if length == 0. {
             length = 1.;
         }
 
-        self.velocity.x +=
-            ((acceleration.x / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.;
-        self.velocity.y +=
-            ((acceleration.y / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.;
-        self.velocity.z += ((acceleration.z / length) * (vertical_speed * (1. - conf.camera.vertical_smoothing))) / 2.;
-        // Freecam
-        self.velocity.pitch += acceleration.pitch;
-        self.velocity.yaw += acceleration.yaw;
-    }
-
-    fn bc_smooth_decay_velocity(&mut self, conf: &FreecamConfig) {
-        self.velocity.x *= conf.camera.horizontal_smoothing;
-        self.velocity.y *= conf.camera.horizontal_smoothing;
-        self.velocity.z *= conf.camera.vertical_smoothing;
-        self.velocity.pitch *= conf.camera.pan_smoothing;
-        self.velocity.yaw *= conf.camera.pan_smoothing;
-    }
-
-    unsafe fn pause(&mut self, paused: bool, patcher: &mut LocalPatcher) {
-        if self.paused != paused {
-            self.paused = paused;
-            if paused {
-                patcher.disable_all_patches();
-            } else {
-                patcher.enable_all_patches();
-            }
+        Velocity {
+            x: current_velocity.x
+                + ((acceleration.x / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.,
+            y: current_velocity.y
+                + ((acceleration.y / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.,
+            z: current_velocity.z
+                + ((acceleration.z / length) * (vertical_speed * (1. - conf.camera.vertical_smoothing))) / 2.,
+            pitch: current_velocity.pitch + acceleration.pitch,
+            yaw: current_velocity.yaw + acceleration.yaw,
         }
     }
 
-    unsafe fn sync_custom_camera(&mut self, patcher: &LocalPatcher, conf: &mut FreecamConfig) {
-        let target_pos = patcher.mut_read(conf.addresses.battle_cam_target_addr.as_mut());
-        let camera_pos = patcher.mut_read(conf.addresses.battle_cam_addr.as_mut());
+    fn bc_smooth_decay_velocity(velocity: &mut Velocity, conf: &FreecamConfig) {
+        velocity.x *= conf.camera.horizontal_smoothing;
+        velocity.y *= conf.camera.horizontal_smoothing;
+        velocity.z *= conf.camera.vertical_smoothing;
+        velocity.pitch *= conf.camera.pan_smoothing;
+        velocity.yaw *= conf.camera.pan_smoothing;
+    }
+
+    unsafe fn change_battle_state(&mut self, paused: bool) {
+        if paused {
+            self.battle_patcher.change_state(BattlePatchState::SpecialOnlyApplied);
+        } else {
+            self.battle_patcher.change_state(BattlePatchState::Applied);
+        }
+    }
+
+    unsafe fn sync_custom_camera(&mut self, conf: &mut FreecamConfig) {
+        let target_pos = self
+            .battle_patcher
+            .patcher
+            .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
+        let camera_pos = self
+            .battle_patcher
+            .patcher
+            .mut_read(conf.addresses.battle_cam_addr.as_mut());
 
         let (pitch, yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
 
@@ -429,10 +461,151 @@ impl BattleCamState {
         self.custom_camera.z = camera_pos.z_coord;
         self.z_diff = 0.;
         self.minimal_z = 0.;
-        self.remote_z_max
+        self.battle_patcher
+            .maintain_z
+            .remote_z
             .store(self.custom_camera.z.to_bits(), Ordering::SeqCst);
         self.custom_camera.pitch = pitch;
         self.custom_camera.yaw = yaw;
+    }
+}
+
+pub struct BattlePatcher {
+    patcher: LocalPatcher,
+    special_patcher: LocalPatcher,
+    maintain_z: MaintainZHeightBehaviour,
+    state: BattlePatchState,
+}
+
+pub enum BattlePatchState {
+    /// All patches are applied and full camera control is taken away from the game
+    Applied,
+    /// Special patches which should _always_ be active whilst in battle are still applied, other camera patches are not applied.
+    SpecialOnlyApplied,
+    /// No patches are currently applied.
+    NotApplied,
+}
+
+impl BattlePatcher {
+    pub fn new(conf: &mut FreecamConfig) -> Self {
+        let mut general_patcher = LocalPatcher::new();
+        let mut special_patcher = LocalPatcher::new();
+
+        let mut behaviour = MaintainZHeightBehaviour::default();
+
+        // Always initialise our patcher with all the requisite patches.
+        for patch in conf.patch_locations.iter_mut() {
+            unsafe {
+                patch_locations::patch_logic(patch, &mut general_patcher);
+            }
+        }
+
+        behaviour.apply_general_patch(&mut general_patcher);
+        behaviour.apply_special_patch(&mut special_patcher);
+
+        Self {
+            patcher: general_patcher,
+            special_patcher,
+            maintain_z: behaviour,
+            state: BattlePatchState::NotApplied,
+        }
+    }
+
+    pub unsafe fn change_state(&mut self, new_state: BattlePatchState) {
+        match self.state {
+            BattlePatchState::Applied => match new_state {
+                BattlePatchState::Applied => {}
+                BattlePatchState::SpecialOnlyApplied => {
+                    self.patcher.disable_all_patches();
+                }
+                BattlePatchState::NotApplied => {
+                    self.patcher.disable_all_patches();
+                    self.special_patcher.disable_all_patches();
+                }
+            },
+            BattlePatchState::SpecialOnlyApplied => match new_state {
+                BattlePatchState::Applied => {
+                    self.patcher.enable_all_patches();
+                }
+                BattlePatchState::SpecialOnlyApplied => {}
+                BattlePatchState::NotApplied => {
+                    self.special_patcher.disable_all_patches();
+                }
+            },
+            BattlePatchState::NotApplied => match new_state {
+                BattlePatchState::Applied => {
+                    self.patcher.enable_all_patches();
+                    self.special_patcher.enable_all_patches();
+                }
+                BattlePatchState::SpecialOnlyApplied => {
+                    self.special_patcher.enable_all_patches();
+                }
+                BattlePatchState::NotApplied => {}
+            },
+        }
+        self.state = new_state;
+    }
+}
+
+mod special_patches {
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
+
+    use crate::patcher::LocalPatcher;
+
+    pub trait Behaviour {
+        fn run(&mut self) -> anyhow::Result<()>;
+
+        /// Apply a patch which can get disabled based on special circumstances (e.g., moving towards unit).
+        fn apply_general_patch(&mut self, patcher: &mut LocalPatcher) {}
+
+        /// Apply a patch which never gets disabled during a battle.
+        fn apply_special_patch(&mut self, patcher: &mut LocalPatcher) {}
+    }
+
+    #[derive(Default)]
+    pub struct MaintainZHeightBehaviour {
+        pub remote_z: Arc<AtomicU32>,
+    }
+
+    impl Behaviour for MaintainZHeightBehaviour {
+        fn run(&mut self) -> anyhow::Result<()> {
+            todo!()
+        }
+
+        fn apply_general_patch(&mut self, patcher: &mut LocalPatcher) {
+            // One of the `movss` which moved values to the battlecam address _anyway_
+            // We have 15 bytes of `nops` atm at that address.
+            let address_to_patch = 0x008F8C6C;
+            let address_to_patch_2 = 0x008F9439;
+            let address = (self.remote_z.as_ptr() as u32).to_le_bytes();
+
+            // 0:  52                      push   edx
+            // 1:  ba 11 23 67 80          mov    edx,ADDRESS
+            // 6:  f3 0f 11 0a             movss  DWORD PTR [edx],xmm1
+            // a:  5a                      pop    edx
+            let mut assembly_patch = [
+                0x52, 0xBA, address[0], address[1], address[2], address[3], 0xF3, 0x0F, 0x11, 0x0A, 0x5A,
+            ];
+
+            unsafe { patcher.patch(address_to_patch as *mut u8, &assembly_patch, false) }
+            // 6:  f3 0f 11 02             movss  DWORD PTR [edx],xmm0
+            assembly_patch[9] = 0x02;
+            unsafe { patcher.patch(address_to_patch_2 as *mut u8, &assembly_patch, false) }
+            // TODO: Do the same above thing, but for _all_ pointers instead of `NOPing`  them
+            // At the very least do the numbered ones here, as they're the ones which `teleport` us when double clicking a unit!
+            // ALSO TODO: Remove the below from the standard patch list!
+            // 52     "0x8F8E8B",
+            //     "0x95B7F4",
+            //
+            //
+            // 66     "0x8F8E97",
+            //     "0x95B805",
+            //
+            //
+            // 82     "0x8F8E91",
+            //     "0x95B7FC",
+        }
     }
 }
 

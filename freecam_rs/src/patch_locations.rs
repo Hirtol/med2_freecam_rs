@@ -1,5 +1,5 @@
 use crate::ptr::NonNullPtr;
-use rust_hooking_utils::patching::LocalPatcher;
+use crate::patcher::LocalPatcher;
 
 pub const PATCH_LOCATIONS_STEAM: [usize; 83] = [
     // Camera X
