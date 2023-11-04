@@ -1,20 +1,20 @@
 use std::f32::consts::PI;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use rust_hooking_utils::raw_input::key_manager::{KeyState, KeyboardManager};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-use crate::battle_cam::special_patches::{Behaviour, MaintainZHeightBehaviour};
 use crate::config::FreecamConfig;
 use crate::data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 use crate::mouse::ScrollTracker;
 use crate::patcher::LocalPatcher;
 
 pub mod patch_locations;
+mod patches;
 
 type Acceleration = Velocity;
 
@@ -93,6 +93,11 @@ impl BattleCamera {
 pub struct BattleState {
     battle_patcher: BattlePatcher,
 
+    /// General data structure containing all data that is written to by the game thread.
+    ///
+    /// Note that this _must_ be below `battle_patcher` in the struct declaration to ensure the patches are removed
+    /// before dropping this remote data.
+    remote_data: RemoteData,
     custom_camera: CustomCameraState,
     velocity: Velocity,
     // Patch related state
@@ -106,12 +111,16 @@ pub struct BattleState {
 }
 
 impl BattleState {
+    /// Create a new ephemeral [BattleState] instance.
+    ///
+    /// A new struct should be created for each new battle.
     pub fn new(conf: &mut FreecamConfig) -> Self {
         let mut point = POINT::default();
         let _ = unsafe { GetCursorPos(&mut point) };
+        let remote = RemoteData::default();
 
         Self {
-            battle_patcher: BattlePatcher::new(conf),
+            battle_patcher: BattlePatcher::new(conf, &remote),
             old_cursor_pos: point,
             velocity: Default::default(),
             last_left_click: Instant::now(),
@@ -119,6 +128,7 @@ impl BattleState {
             is_moving_toward_unit: false,
             z_diff: 0.0,
             minimal_z: 0.0,
+            remote_data: remote,
         }
     }
 
@@ -141,6 +151,8 @@ impl BattleState {
                 .patcher
                 .write(conf.addresses.battle_cam_conf_type.as_mut(), BattleCameraType::TotalWar);
         }
+
+        println!("Remote data: {:#?}", self.remote_data);
 
         if !conf.camera.custom_camera_enabled {
             self.run_battle_no_custom(key_man, t_delta, conf)
@@ -358,8 +370,7 @@ impl BattleState {
         self.custom_camera.y = 900.0f32.min((-900.0f32).max(self.custom_camera.y));
 
         if conf.camera.maintain_relative_height {
-            let new_z_diff =
-                self.custom_camera.z - f32::from_bits(self.battle_patcher.maintain_z.remote_z.load(Ordering::SeqCst));
+            let new_z_diff = self.custom_camera.z - f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst));
 
             if self.velocity.z.abs() > f32::EPSILON {
                 self.z_diff = new_z_diff;
@@ -373,7 +384,7 @@ impl BattleState {
         // If we're below the ground we should probably move up!
         // This isn't a perfect solution, as one can still clip a bit, but floating a set amount above the ground kinda ruins the point.
         if conf.camera.prevent_ground_clipping {
-            let z_bound = f32::from_bits(self.battle_patcher.maintain_z.remote_z.load(Ordering::SeqCst));
+            let z_bound = f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst));
             let mut still_changing = false;
             // Ensure there's still changes happening
             if (self.minimal_z - z_bound).abs() > f32::EPSILON {
@@ -451,8 +462,7 @@ impl BattleState {
         self.custom_camera.z = camera_pos.z_coord;
         self.z_diff = 0.;
         self.minimal_z = 0.;
-        self.battle_patcher
-            .maintain_z
+        self.remote_data
             .remote_z
             .store(self.custom_camera.z.to_bits(), Ordering::SeqCst);
         self.custom_camera.pitch = pitch;
@@ -463,7 +473,7 @@ impl BattleState {
 pub struct BattlePatcher {
     patcher: LocalPatcher,
     special_patcher: LocalPatcher,
-    maintain_z: MaintainZHeightBehaviour,
+    dynamic_patches: Vec<DynamicPatch>,
     state: BattlePatchState,
 }
 
@@ -477,11 +487,9 @@ pub enum BattlePatchState {
 }
 
 impl BattlePatcher {
-    pub fn new(conf: &mut FreecamConfig) -> Self {
+    pub fn new(conf: &mut FreecamConfig, remote_data: &RemoteData) -> Self {
         let mut general_patcher = LocalPatcher::new();
         let mut special_patcher = LocalPatcher::new();
-
-        let mut behaviour = MaintainZHeightBehaviour::default();
 
         // Always initialise our patcher with all the requisite patches.
         for patch in conf.patch_locations.iter_mut() {
@@ -490,13 +498,18 @@ impl BattlePatcher {
             }
         }
 
-        behaviour.apply_general_patch(&mut general_patcher);
-        behaviour.apply_special_patch(&mut special_patcher);
+        patches::apply_general_z_remote_patch(&mut general_patcher, remote_data);
+        let teleport_patch = unsafe {
+            let teleport_patch = patches::create_unit_card_teleport_patch(remote_data.teleport_location.get() as usize)
+                .expect("Failed to create teleport patch");
+            teleport_patch.apply_to_patcher(&mut special_patcher);
+            teleport_patch
+        };
 
         Self {
             patcher: general_patcher,
             special_patcher,
-            maintain_z: behaviour,
+            dynamic_patches: vec![teleport_patch],
             state: BattlePatchState::NotApplied,
         }
     }
@@ -534,68 +547,6 @@ impl BattlePatcher {
             },
         }
         self.state = new_state;
-    }
-}
-
-mod special_patches {
-    use std::sync::atomic::AtomicU32;
-    use std::sync::Arc;
-
-    use crate::patcher::LocalPatcher;
-
-    pub trait Behaviour {
-        fn run(&mut self) -> anyhow::Result<()>;
-
-        /// Apply a patch which can get disabled based on special circumstances (e.g., moving towards unit).
-        fn apply_general_patch(&mut self, patcher: &mut LocalPatcher) {}
-
-        /// Apply a patch which never gets disabled during a battle.
-        fn apply_special_patch(&mut self, patcher: &mut LocalPatcher) {}
-    }
-
-    #[derive(Default)]
-    pub struct MaintainZHeightBehaviour {
-        pub remote_z: Arc<AtomicU32>,
-    }
-
-    impl Behaviour for MaintainZHeightBehaviour {
-        fn run(&mut self) -> anyhow::Result<()> {
-            todo!()
-        }
-
-        fn apply_general_patch(&mut self, patcher: &mut LocalPatcher) {
-            // One of the `movss` which moved values to the battlecam address _anyway_
-            // We have 15 bytes of `nops` atm at that address.
-            let address_to_patch = 0x008F8C6C;
-            let address_to_patch_2 = 0x008F9439;
-            let address = (self.remote_z.as_ptr() as u32).to_le_bytes();
-
-            // 0:  52                      push   edx
-            // 1:  ba 11 23 67 80          mov    edx,ADDRESS
-            // 6:  f3 0f 11 0a             movss  DWORD PTR [edx],xmm1
-            // a:  5a                      pop    edx
-            let mut assembly_patch = [
-                0x52, 0xBA, address[0], address[1], address[2], address[3], 0xF3, 0x0F, 0x11, 0x0A, 0x5A,
-            ];
-
-            unsafe { patcher.patch(address_to_patch as *mut u8, &assembly_patch, false) }
-            // 6:  f3 0f 11 02             movss  DWORD PTR [edx],xmm0
-            assembly_patch[9] = 0x02;
-            unsafe { patcher.patch(address_to_patch_2 as *mut u8, &assembly_patch, false) }
-            // TODO: Do the same above thing, but for _all_ pointers instead of `NOPing`  them
-            // At the very least do the numbered ones here, as they're the ones which `teleport` us when double clicking a unit!
-            // ALSO TODO: Remove the below from the standard patch list!
-            // 52     "0x8F8E8B",
-            //     "0x95B7F4",
-            //
-            //
-            // 66     "0x8F8E97",
-            //     "0x95B805",
-            //
-            //
-            // 82     "0x8F8E91",
-            //     "0x95B7FC",
-        }
     }
 }
 
