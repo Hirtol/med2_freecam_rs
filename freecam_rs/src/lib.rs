@@ -18,7 +18,6 @@ mod mouse;
 mod ptr;
 
 mod battle_cam;
-mod patch_locations;
 mod patcher;
 
 static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);

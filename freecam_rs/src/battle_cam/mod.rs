@@ -12,8 +12,9 @@ use crate::battle_cam::special_patches::{Behaviour, MaintainZHeightBehaviour};
 use crate::config::FreecamConfig;
 use crate::data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 use crate::mouse::ScrollTracker;
-use crate::patch_locations;
 use crate::patcher::LocalPatcher;
+
+pub mod patch_locations;
 
 type Acceleration = Velocity;
 
@@ -140,11 +141,7 @@ impl BattleState {
                 .patcher
                 .write(conf.addresses.battle_cam_conf_type.as_mut(), BattleCameraType::TotalWar);
         }
-        println!(
-            "Atomic Ptr: {:#X?} - Arc Ptr: {:#X?}",
-            self.battle_patcher.maintain_z.remote_z.as_ptr() as usize,
-            Arc::as_ptr(&self.battle_patcher.maintain_z.remote_z)
-        );
+
         if !conf.camera.custom_camera_enabled {
             self.run_battle_no_custom(key_man, t_delta, conf)
         } else {
@@ -174,7 +171,7 @@ impl BattleState {
         GetCursorPos(&mut point)?;
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(key_man, conf, &mut acceleration, point);
+        self.bc_handle_panning(key_man, conf, &mut acceleration, point, false);
 
         // Adjust pitch and yaw
         self.velocity.pitch += acceleration.pitch;
@@ -186,12 +183,7 @@ impl BattleState {
         self.velocity.yaw *= conf.camera.pan_smoothing;
 
         // Write to the addresses
-        if matches!(self.battle_patcher.state, BattlePatchState::Applied) {
-            write_pitch_yaw(camera_pos, target_pos, pitch, yaw);
-        } else {
-            // Update our custom camera values.
-            self.sync_custom_camera(conf);
-        }
+        write_pitch_yaw(camera_pos, target_pos, pitch, yaw);
 
         // Persist info for next loop
         self.old_cursor_pos = point;
@@ -230,7 +222,7 @@ impl BattleState {
         self.bc_handle_left_click(key_man, point);
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(key_man, conf, &mut acceleration, point);
+        self.bc_handle_panning(key_man, conf, &mut acceleration, point, true);
 
         // Camera movement
         self.bc_move_camera(key_man, conf, &mut acceleration);
@@ -301,15 +293,17 @@ impl BattleState {
         conf: &mut FreecamConfig,
         acceleration: &mut Velocity,
         point: POINT,
+        should_change_b_state: bool,
     ) {
         if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.freecam_key)) {
-            println!("Has pressed key PANNING KEY");
             let invert = if conf.camera.inverted { -1.0 } else { 1.0 };
             let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.pan_smoothing);
             acceleration.pitch -= ((invert * (point.y - self.old_cursor_pos.y) as f32) / 500.) * adjusted_sens;
             acceleration.yaw -= ((invert * (point.x - self.old_cursor_pos.x) as f32) / 500.) * adjusted_sens;
-            // We should have control again.
-            self.change_battle_state(false);
+            if should_change_b_state {
+                // We should have control again.
+                self.change_battle_state(false);
+            }
         }
     }
 

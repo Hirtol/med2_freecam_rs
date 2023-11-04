@@ -4,8 +4,8 @@ use std::path::Path;
 use anyhow::Context;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_R, VK_SHIFT};
 
+use crate::battle_cam::patch_locations::PATCH_LOCATIONS_STEAM;
 use crate::data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
-use crate::patch_locations::PATCH_LOCATIONS_STEAM;
 use crate::ptr::NonNullPtr;
 
 pub const CONFIG_FILE_NAME: &str = "freecam_config.json";
@@ -67,9 +67,9 @@ impl Default for CameraConfig {
             inverted: false,
             inverted_scroll: true,
             sensitivity: 1.0,
-            pan_smoothing: 0.5,
-            vertical_smoothing: 0.9,
-            horizontal_smoothing: 0.9,
+            pan_smoothing: 0.55,
+            vertical_smoothing: 0.92,
+            horizontal_smoothing: 0.92,
             horizontal_base_speed: 1.0,
             vertical_base_speed: 1.0,
             fast_multiplier: 3.5,
