@@ -2,6 +2,7 @@ use std::f32::consts::PI;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use crate::battle_cam::patch_locations::Z_FIX_DELTA_GROUND_ADDR;
 use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use rust_hooking_utils::raw_input::key_manager::{KeyState, KeyboardManager};
 use windows::Win32::Foundation::POINT;
@@ -106,8 +107,6 @@ pub struct BattleState {
     is_moving_toward_unit: bool,
     /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
     z_diff: f32,
-    /// The lowest bound for Z at a particular point in time to prevent the camera from sinking below the terrain.
-    minimal_z: f32,
 }
 
 impl BattleState {
@@ -127,7 +126,6 @@ impl BattleState {
             custom_camera: Default::default(),
             is_moving_toward_unit: false,
             z_diff: 0.0,
-            minimal_z: 0.0,
             remote_data: remote,
         }
     }
@@ -153,6 +151,11 @@ impl BattleState {
         }
 
         println!("Remote data: {:#?}", self.remote_data);
+        println!(
+            "Z Ground level: {:#?}",
+            f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst))
+                - *self.battle_patcher.patcher.read(Z_FIX_DELTA_GROUND_ADDR as *const f32)
+        );
 
         if !conf.camera.custom_camera_enabled {
             self.run_battle_no_custom(key_man, t_delta, conf)
@@ -225,6 +228,22 @@ impl BattleState {
             || (self.custom_camera.z - camera_pos.z_coord).abs() > f32::EPSILON
         {
             self.sync_custom_camera(conf);
+        }
+
+        unsafe {
+            let teleport_location = &mut *self.remote_data.teleport_location.get();
+            // Check if all are different (in case of mid-write check).
+            if teleport_location.x != 0. && teleport_location.y != 0. && teleport_location.z != 0. {
+                self.custom_camera.x = teleport_location.x;
+                self.custom_camera.y = teleport_location.y;
+                self.custom_camera.z = teleport_location.z;
+                // Update for maintaining relative height
+                self.z_diff = self.custom_camera.z - self.get_ground_z_level();
+                // Reset values.
+                teleport_location.x = 0.;
+                teleport_location.y = 0.;
+                teleport_location.z = 0.
+            }
         }
 
         // Handle scroll
@@ -368,9 +387,12 @@ impl BattleState {
     fn bc_restrict_coordinates(&mut self, conf: &mut FreecamConfig) {
         self.custom_camera.x = 900.0f32.min((-900.0f32).max(self.custom_camera.x));
         self.custom_camera.y = 900.0f32.min((-900.0f32).max(self.custom_camera.y));
+        self.custom_camera.z = 2400.0f32.min(self.custom_camera.z);
 
+        // TODO: Add a new camera position struct which stores the _final_ value of a camera movement through scroll.
+        // Then we can interpolate gradual movement between that state and the current camera position smoothly instead of jittery!
         if conf.camera.maintain_relative_height {
-            let new_z_diff = self.custom_camera.z - f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst));
+            let new_z_diff = self.custom_camera.z - self.get_ground_z_level();
 
             if self.velocity.z.abs() > f32::EPSILON {
                 self.z_diff = new_z_diff;
@@ -385,21 +407,16 @@ impl BattleState {
         // This isn't a perfect solution, as one can still clip a bit, but floating a set amount above the ground kinda ruins the point.
         if conf.camera.prevent_ground_clipping {
             let z_bound = f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst));
-            let mut still_changing = false;
-            // Ensure there's still changes happening
-            if (self.minimal_z - z_bound).abs() > f32::EPSILON {
-                self.minimal_z = z_bound;
-                still_changing = true;
-            }
+            let multiplier = if z_bound.is_sign_positive() { 1. } else { -1. };
 
-            let multiplier = if z_bound.is_sign_positive() { -1. } else { 1. };
             // !still_changing
-            if self.minimal_z != 0.
+            if self.get_ground_z_level() != 0.
                 && !z_bound.is_nan()
                 && z_bound.is_finite()
-                && ((self.custom_camera.z - self.minimal_z) < (multiplier * 2.1))
+                && ((self.custom_camera.z - self.get_ground_z_level()) < (multiplier * conf.camera.ground_clip_margin))
             {
-                self.custom_camera.z = (self.minimal_z + (multiplier * 2.1)).max(self.custom_camera.z);
+                self.custom_camera.z = (self.get_ground_z_level() + (multiplier * conf.camera.ground_clip_margin))
+                    .max(self.custom_camera.z);
             }
         }
     }
@@ -461,12 +478,19 @@ impl BattleState {
         self.custom_camera.y = camera_pos.y_coord;
         self.custom_camera.z = camera_pos.z_coord;
         self.z_diff = 0.;
-        self.minimal_z = 0.;
         self.remote_data
             .remote_z
             .store(self.custom_camera.z.to_bits(), Ordering::SeqCst);
         self.custom_camera.pitch = pitch;
         self.custom_camera.yaw = yaw;
+    }
+
+    /// Return the current ground z-level
+    fn get_ground_z_level(&self) -> f32 {
+        unsafe {
+            f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst))
+                - *self.battle_patcher.patcher.read(Z_FIX_DELTA_GROUND_ADDR as *const f32)
+        }
     }
 }
 

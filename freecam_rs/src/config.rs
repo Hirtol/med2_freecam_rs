@@ -28,19 +28,6 @@ pub struct FreecamConfig {
     pub patch_locations: Vec<NonNullPtr<u8>>,
 }
 
-// #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq, PartialOrd)]
-// pub struct PatchLocation {
-//     pub address: NonNullPtr<u8>,
-// }
-
-// impl PatchLocation {
-//     pub fn new(address: usize) -> Self {
-//         PatchLocation {
-//             address: address.into(),
-//         }
-//     }
-// }
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct CameraConfig {
     pub custom_camera_enabled: bool,
@@ -58,6 +45,10 @@ pub struct CameraConfig {
     pub maintain_relative_height: bool,
     /// Whether to try to prevent the camera from clipping through the ground.
     pub prevent_ground_clipping: bool,
+    /// How much of a difference there should _at least_ be between the ground level and the current camera position
+    ///
+    /// Setting this higher ensures less ground clipping will occur, but you won't be able to zoom in as much.
+    pub ground_clip_margin: f32,
 }
 
 impl Default for CameraConfig {
@@ -74,8 +65,9 @@ impl Default for CameraConfig {
             vertical_base_speed: 1.0,
             fast_multiplier: 3.5,
             maintain_relative_height: true,
-            slow_multiplier: 0.5,
+            slow_multiplier: 0.2,
             prevent_ground_clipping: true,
+            ground_clip_margin: 1.3,
         }
     }
 }

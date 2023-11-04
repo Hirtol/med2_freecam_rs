@@ -1,6 +1,8 @@
 use crate::patcher::LocalPatcher;
 use crate::ptr::NonNullPtr;
 
+pub const Z_FIX_DELTA_GROUND_ADDR: usize = 0x0193F364;
+
 pub const PATCH_LOCATIONS_STEAM: [usize; 77] = [
     // Camera X
     0x008F8E10, 0x008F8B50, 0x00E7EF6A, 0x0094FCDC, 0x008FAC69, 0x008F8C6C, 0x008F9439, 0x0095B40E,
