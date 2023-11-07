@@ -153,8 +153,6 @@ impl BattleState {
                 .write(data::BATTLE_CAM_CONF_TYPE_ADDR, BattleCameraType::TotalWar);
         }
 
-        println!("Remote data: {:#?}", self.remote_data);
-
         if !conf.camera.custom_camera_enabled {
             self.run_battle_no_custom(key_man, t_delta, conf)
         } else {
@@ -252,7 +250,6 @@ impl BattleState {
         self.bc_restrict_coordinates(conf);
 
         if matches!(self.battle_patcher.state, BattlePatchState::Applied) {
-            println!("WRITING VALUES: {:#?}", self.velocity);
             // Important that this runs _before_ pitch/yaw adjustment as they're dependent.
             write_custom_camera(&self.custom_camera, camera_pos);
 

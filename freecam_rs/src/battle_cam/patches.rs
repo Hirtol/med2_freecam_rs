@@ -15,7 +15,7 @@ pub struct RemoteData {
     /// The `remote_z` value is the value that the game _would've_ written to the camera's `z` coordinate if those writes
     /// weren't patched out. We instead redirect those writes to this variable to make use of it later to calculate the
     /// ground's `z` coordinates. Note that this `remote_z` seems to completely ignore the values we write to the rendered camera's address.
-    /// (Presumably it uses the authoritative Z location at `0x0193d580`). It therefore changes based on the base game's scrolling behaviour.
+    /// (Presumably it uses the authoritative Z location at `0x0193d584`). It therefore changes based on the base game's scrolling behaviour.
     ///
     /// Note that this is currently only updated when the user provides movement input (as that is when the game tries to update the coordinate).
     pub remote_z: Arc<AtomicU32>,
