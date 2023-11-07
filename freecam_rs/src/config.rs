@@ -25,7 +25,6 @@ pub struct FreecamConfig {
     ///
     /// Forcing an override on every game start seems the most logical.
     pub force_ttw_camera: bool,
-    pub patch_locations: Vec<NonNullPtr<u8>>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -140,7 +139,6 @@ impl Default for FreecamConfig {
             addresses: Default::default(),
             camera: Default::default(),
             force_ttw_camera: true,
-            patch_locations: PATCH_LOCATIONS_STEAM.into_iter().map(|loc| loc.into()).collect(),
         }
     }
 }

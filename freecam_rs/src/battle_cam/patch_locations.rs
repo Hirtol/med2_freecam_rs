@@ -6,6 +6,11 @@ use crate::ptr::NonNullPtr;
 /// This is seemingly used to a constant elevation for the camera whilst moving around.
 pub const Z_FIX_DELTA_GROUND_ADDR: usize = 0x0193F364;
 
+pub const BATTLE_ONGOING_ADDR: usize = 0x193D683;
+pub const BATTLE_CAM_CONF_TYPE_ADDR: usize = 0x1639F14;
+pub const BATTLE_CAM_ADDR: usize = 0x193D598;
+pub const BATTLE_CAM_TARGET_ADDR: usize = 0x193D5DC;
+
 /// All locations where writes to camera coordinates occur.
 ///
 /// These patches can be disabled when needed to allow base-game functionality to happen (such as panning towards units upon double clicking).
@@ -40,12 +45,12 @@ pub const PATCH_LOCATIONS_STEAM: [usize; 74] = [
     0x008F705B, 0x008FAC4E, 0x0094E9BC, 0x008F9055,
 ];
 
-pub unsafe fn patch_logic(address: &mut NonNullPtr<u8>, patcher: &mut LocalPatcher) {
-    let length = if (*patcher.read(address.as_ref())) == 0xF3 { 5 } else { 3 };
+pub unsafe fn patch_logic(address: usize, patcher: &mut LocalPatcher) {
+    let length = if (*patcher.read(address as *const u8)) == 0xF3 { 5 } else { 3 };
     //The 243 or F3 byte means that the operation in total is 5 bytes long.
     //Otherwise the operation is 3 bytes long. This works for this program as these are the only possibilities
     let to_patch = vec![0x90; length];
 
     // Don't immediately activate the patches, causes crashes.
-    patcher.patch(address.as_mut(), &to_patch, false);
+    patcher.patch(address as *mut u8, &to_patch, false);
 }

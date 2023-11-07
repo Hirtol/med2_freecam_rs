@@ -45,7 +45,6 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
     let mut key_manager = KeyboardManager::new();
     let mut update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
     let mut scroll_tracker = ScrollTracker::new()?;
-    let mut patcher = rust_hooking_utils::patching::LocalPatcher::new();
     let mut battle_cam = BattleCamera::new(LocalPatcher::new());
 
     let mut last_update = Instant::now();

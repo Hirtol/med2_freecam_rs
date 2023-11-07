@@ -62,7 +62,7 @@ impl BattleCamera {
         key_man: &mut KeyboardManager,
         t_delta: Duration,
     ) -> anyhow::Result<()> {
-        let in_battle = self.is_in_battle(conf);
+        let in_battle = self.is_in_battle();
 
         // Handle state transitions
         match self.current_state {
@@ -90,8 +90,8 @@ impl BattleCamera {
         }
     }
 
-    pub fn is_in_battle(&self, conf: &FreecamConfig) -> bool {
-        unsafe { *self.patcher.read(conf.addresses.battle_pointer.as_ref()) != 0 }
+    pub fn is_in_battle(&self) -> bool {
+        unsafe { *self.patcher.read(patch_locations::BATTLE_ONGOING_ADDR as *const u32) != 0 }
     }
 }
 
@@ -122,7 +122,7 @@ impl BattleState {
         let remote = RemoteData::default();
 
         Self {
-            battle_patcher: BattlePatcher::new(conf, &remote),
+            battle_patcher: BattlePatcher::new(&remote),
             old_cursor_pos: point,
             velocity: Default::default(),
             last_left_click: Instant::now(),
@@ -147,9 +147,10 @@ impl BattleState {
     ) -> anyhow::Result<()> {
         if conf.force_ttw_camera {
             // Always ensure we're on the TotalWar cam
-            self.battle_patcher
-                .patcher
-                .write(conf.addresses.battle_cam_conf_type.as_mut(), BattleCameraType::TotalWar);
+            self.battle_patcher.patcher.write(
+                patch_locations::BATTLE_CAM_CONF_TYPE_ADDR as *mut BattleCameraType,
+                BattleCameraType::TotalWar,
+            );
         }
 
         println!("Remote data: {:#?}", self.remote_data);
@@ -167,14 +168,8 @@ impl BattleState {
         t_delta: Duration,
         conf: &mut FreecamConfig,
     ) -> anyhow::Result<()> {
-        let target_pos = self
-            .battle_patcher
-            .patcher
-            .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
-        let camera_pos = self
-            .battle_patcher
-            .patcher
-            .mut_read(conf.addresses.battle_cam_addr.as_mut());
+        let target_pos = self.get_game_target_camera();
+        let camera_pos = self.get_game_camera();
         let mut acceleration = Acceleration::default();
 
         let (mut pitch, mut yaw) = calculate_pitch_yaw(camera_pos, target_pos);
@@ -209,10 +204,7 @@ impl BattleState {
         t_delta: Duration,
         conf: &mut FreecamConfig,
     ) -> anyhow::Result<()> {
-        let camera_pos = self
-            .battle_patcher
-            .patcher
-            .mut_read(conf.addresses.battle_cam_addr.as_mut());
+        let camera_pos = self.get_game_camera();
         let mut acceleration = Acceleration::default();
         let (horizontal_speed, vertical_speed) = calculate_speed_multipliers(conf, key_man);
 
@@ -264,10 +256,7 @@ impl BattleState {
             // Important that this runs _before_ pitch/yaw adjustment as they're dependent.
             write_custom_camera(&self.custom_camera, camera_pos);
 
-            let target_pos = self
-                .battle_patcher
-                .patcher
-                .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
+            let target_pos = self.get_game_target_camera();
             write_pitch_yaw(camera_pos, target_pos, self.custom_camera.pitch, self.custom_camera.yaw);
         } else {
             // Update our custom camera values.
@@ -478,14 +467,8 @@ impl BattleState {
     }
 
     unsafe fn sync_custom_camera(&mut self, conf: &mut FreecamConfig) {
-        let target_pos = self
-            .battle_patcher
-            .patcher
-            .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
-        let camera_pos = self
-            .battle_patcher
-            .patcher
-            .mut_read(conf.addresses.battle_cam_addr.as_mut());
+        let target_pos = self.get_game_target_camera();
+        let camera_pos = self.get_game_camera();
 
         let (pitch, yaw) = calculate_pitch_yaw(camera_pos, target_pos);
 
@@ -501,7 +484,7 @@ impl BattleState {
     }
 
     /// Return the current ground z-level
-    /// 
+    ///
     /// We don't know the method/values directly, so we simply subtract the current [Z_FIX_DELTA_GROUND_ADDR] from the game's
     /// `remote_z` value
     fn get_ground_z_level(&self) -> f32 {
@@ -509,6 +492,18 @@ impl BattleState {
             f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst))
                 - *self.battle_patcher.patcher.read(Z_FIX_DELTA_GROUND_ADDR as *const f32)
         }
+    }
+
+    unsafe fn get_game_camera<'a, 'b>(&'a self) -> &'b mut BattleCameraView {
+        self.battle_patcher
+            .patcher
+            .mut_read(patch_locations::BATTLE_CAM_ADDR as *mut BattleCameraView)
+    }
+
+    unsafe fn get_game_target_camera<'a, 'b>(&'a self) -> &'b mut BattleCameraTargetView {
+        self.battle_patcher
+            .patcher
+            .mut_read(patch_locations::BATTLE_CAM_TARGET_ADDR as *mut BattleCameraTargetView)
     }
 }
 
@@ -529,12 +524,12 @@ pub enum BattlePatchState {
 }
 
 impl BattlePatcher {
-    pub fn new(conf: &mut FreecamConfig, remote_data: &RemoteData) -> Self {
+    pub fn new(remote_data: &RemoteData) -> Self {
         let mut general_patcher = LocalPatcher::new();
         let mut special_patcher = LocalPatcher::new();
 
         // Always initialise our patcher with all the requisite patches.
-        for patch in conf.patch_locations.iter_mut() {
+        for patch in patch_locations::PATCH_LOCATIONS_STEAM {
             unsafe {
                 patch_locations::patch_logic(patch, &mut general_patcher);
             }
