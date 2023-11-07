@@ -1,5 +1,5 @@
 use crate::patcher::LocalPatcher;
-use iced_x86::code_asm::{dword_ptr, eax, ebx, esi, CodeAssembler};
+use iced_x86::code_asm::{dword_ptr, eax, ebx, esi, esp, CodeAssembler};
 use std::cell::UnsafeCell;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -30,6 +30,24 @@ pub struct BattleUnitCameraTeleport {
     pub x: f32,
     pub z: f32,
     pub y: f32,
+    pub x_target: f32,
+    pub z_target: f32,
+    pub y_target: f32,
+}
+
+impl BattleUnitCameraTeleport {
+    /// Check whether there is a teleport 'command' ready.
+    ///
+    /// Will check that _all_ items are no longer equal to ``0.0`. This doesn't eliminate the potential race condition
+    /// between the game code and our code, but it does make it less likely!
+    pub fn is_available(&self) -> bool {
+        self.x != 0.
+            && self.y != 0.
+            && self.z != 0.
+            && self.x_target != 0.
+            && self.y_target != 0.
+            && self.z_target != 0.
+    }
 }
 
 pub struct DynamicPatch {
@@ -52,20 +70,40 @@ impl DynamicPatch {
 }
 
 /// Create a patch for redirecting the writes to the camera's position when a user completes a unit card teleport click.
-pub unsafe fn create_unit_card_teleport_patch(teleport_struct_addr: usize) -> anyhow::Result<DynamicPatch> {
+pub unsafe fn create_unit_card_teleport_patch(
+    teleport_struct_addr: *mut BattleUnitCameraTeleport,
+) -> anyhow::Result<DynamicPatch> {
     const PATCH_ADDR: usize = 0x8F8E8B;
     // The assembler executing the code we want
     let mut a = CodeAssembler::new(32)?;
+    let teleport_struct_addr = teleport_struct_addr as usize;
 
-    // X coord
+    // X coord View
     a.mov(esi, dword_ptr(eax))?;
     a.mov(dword_ptr(teleport_struct_addr), esi)?;
-    // Z coord
+    // Z coord View
     a.mov(esi, dword_ptr(eax + 4))?;
     a.mov(dword_ptr(teleport_struct_addr + 4), esi)?;
-    // Y coord
+    // Y coord View
     a.mov(esi, dword_ptr(eax + 8))?;
     a.mov(dword_ptr(teleport_struct_addr + 8), esi)?;
+
+    // Save the current `eax` register. Load the address for the Target coordinates
+    a.push(eax)?;
+    //
+    a.mov(eax, dword_ptr(esp + 0x14))?;
+    // X coord Target
+    a.mov(esi, dword_ptr(eax))?;
+    a.mov(dword_ptr(teleport_struct_addr + 12), esi)?;
+    // Z coord Target
+    a.mov(esi, dword_ptr(eax + 4))?;
+    a.mov(dword_ptr(teleport_struct_addr + 16), esi)?;
+    // Y coord Target
+    a.mov(esi, dword_ptr(eax + 8))?;
+    a.mov(dword_ptr(teleport_struct_addr + 20), esi)?;
+    // Restore `eax`
+    a.pop(eax)?;
+
     // Jump back to our patch location, but now towards the `pop ebx`
     a.mov(ebx, (PATCH_ADDR + 8) as u32)?;
     a.jmp(ebx)?;

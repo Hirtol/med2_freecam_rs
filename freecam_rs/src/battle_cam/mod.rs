@@ -6,7 +6,7 @@ use crate::battle_cam::patch_locations::Z_FIX_DELTA_GROUND_ADDR;
 use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use rust_hooking_utils::raw_input::key_manager::{KeyState, KeyboardManager};
 use windows::Win32::Foundation::POINT;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_LBUTTON};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_H, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 use crate::config::FreecamConfig;
@@ -28,7 +28,7 @@ pub struct Velocity {
     yaw: f32,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct CustomCameraState {
     x: f32,
     y: f32,
@@ -62,7 +62,7 @@ impl BattleCamera {
         key_man: &mut KeyboardManager,
         t_delta: Duration,
     ) -> anyhow::Result<()> {
-        let in_battle = *self.patcher.read(conf.addresses.battle_pointer.as_ref()) != 0;
+        let in_battle = self.is_in_battle(conf);
 
         // Handle state transitions
         match self.current_state {
@@ -88,6 +88,10 @@ impl BattleCamera {
             BattleCameraState::OutsideBattle => {}
             BattleCameraState::InBattle(b_state) => unsafe { b_state.change_camera_state(enabled) },
         }
+    }
+
+    pub fn is_in_battle(&self, conf: &FreecamConfig) -> bool {
+        unsafe { *self.patcher.read(conf.addresses.battle_pointer.as_ref()) != 0 }
     }
 }
 
@@ -151,11 +155,6 @@ impl BattleState {
         }
 
         println!("Remote data: {:#?}", self.remote_data);
-        println!(
-            "Z Ground level: {:#?}",
-            f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst))
-                - *self.battle_patcher.patcher.read(Z_FIX_DELTA_GROUND_ADDR as *const f32)
-        );
 
         if !conf.camera.custom_camera_enabled {
             self.run_battle_no_custom(key_man, t_delta, conf)
@@ -180,7 +179,7 @@ impl BattleState {
             .mut_read(conf.addresses.battle_cam_addr.as_mut());
         let mut acceleration = Acceleration::default();
 
-        let (mut pitch, mut yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
+        let (mut pitch, mut yaw) = calculate_pitch_yaw(camera_pos, target_pos);
 
         let mut point = POINT::default();
         GetCursorPos(&mut point)?;
@@ -233,16 +232,29 @@ impl BattleState {
         unsafe {
             let teleport_location = &mut *self.remote_data.teleport_location.get();
             // Check if all are different (in case of mid-write check).
-            if teleport_location.x != 0. && teleport_location.y != 0. && teleport_location.z != 0. {
+            if teleport_location.is_available() {
                 self.custom_camera.x = teleport_location.x;
                 self.custom_camera.y = teleport_location.y;
                 self.custom_camera.z = teleport_location.z;
+
+                let target_pos = self
+                    .battle_patcher
+                    .patcher
+                    .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
+                let view_struct = BattleCameraView {
+                    x_coord: teleport_location.x,
+                    z_coord: teleport_location.z,
+                    y_coord: teleport_location.y,
+                };
+                let (pitch, yaw) = calculate_pitch_yaw(&view_struct, target_pos);
+                self.custom_camera.pitch = pitch;
+                self.custom_camera.yaw = yaw;
+
                 // Update for maintaining relative height
                 self.z_diff = self.custom_camera.z - self.get_ground_z_level();
+
                 // Reset values.
-                teleport_location.x = 0.;
-                teleport_location.y = 0.;
-                teleport_location.z = 0.
+                *teleport_location = Default::default();
             }
         }
 
@@ -408,15 +420,15 @@ impl BattleState {
         if conf.camera.prevent_ground_clipping {
             let z_bound = f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst));
             let multiplier = if z_bound.is_sign_positive() { 1. } else { -1. };
+            let clip_margin = multiplier * conf.camera.ground_clip_margin;
 
             // !still_changing
             if self.get_ground_z_level() != 0.
                 && !z_bound.is_nan()
                 && z_bound.is_finite()
-                && ((self.custom_camera.z - self.get_ground_z_level()) < (multiplier * conf.camera.ground_clip_margin))
+                && ((self.custom_camera.z - self.get_ground_z_level()) < clip_margin)
             {
-                self.custom_camera.z = (self.get_ground_z_level() + (multiplier * conf.camera.ground_clip_margin))
-                    .max(self.custom_camera.z);
+                self.custom_camera.z = (self.get_ground_z_level() + clip_margin).max(self.custom_camera.z);
             }
         }
     }
@@ -472,7 +484,7 @@ impl BattleState {
             .patcher
             .mut_read(conf.addresses.battle_cam_addr.as_mut());
 
-        let (pitch, yaw) = calculate_length_pitch_yaw(camera_pos, target_pos);
+        let (pitch, yaw) = calculate_pitch_yaw(camera_pos, target_pos);
 
         self.custom_camera.x = camera_pos.x_coord;
         self.custom_camera.y = camera_pos.y_coord;
@@ -523,8 +535,9 @@ impl BattlePatcher {
         }
 
         patches::apply_general_z_remote_patch(&mut general_patcher, remote_data);
+        // Special (dynamic) patches.
         let teleport_patch = unsafe {
-            let teleport_patch = patches::create_unit_card_teleport_patch(remote_data.teleport_location.get() as usize)
+            let teleport_patch = patches::create_unit_card_teleport_patch(remote_data.teleport_location.get())
                 .expect("Failed to create teleport patch");
             teleport_patch.apply_to_patcher(&mut special_patcher);
             teleport_patch
@@ -589,7 +602,7 @@ fn write_custom_camera(custom_cam: &CustomCameraState, camera_pos: &mut BattleCa
     camera_pos.z_coord = custom_cam.z;
 }
 
-fn calculate_length_pitch_yaw(camera_pos: &BattleCameraView, target_pos: &BattleCameraTargetView) -> (f32, f32) {
+fn calculate_pitch_yaw(camera_pos: &BattleCameraView, target_pos: &BattleCameraTargetView) -> (f32, f32) {
     let length = ((target_pos.x_coord - camera_pos.x_coord).powi(2)
         + (target_pos.y_coord - camera_pos.y_coord).powi(2)
         + (target_pos.z_coord - camera_pos.z_coord).powi(2))
