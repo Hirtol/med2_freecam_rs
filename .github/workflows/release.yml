@@ -7,6 +7,7 @@ on:
 
 jobs:
   build_release_assets:
+    permissions: write-all
     name: Build release assets
     runs-on: ${{ matrix.config.os }}
     strategy:
@@ -28,6 +29,11 @@ jobs:
           key: ${{ matrix.config.target }}
 
       - name: Build release asset
+        env:
+          CARGO_INCREMENTAL: 0
+          CARGO_PROFILE_RELEASE_LTO: fat
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
         run: cargo build --release --target ${{ matrix.config.target }}
 
       - name: Package asset as zip
