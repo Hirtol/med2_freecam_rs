@@ -2,13 +2,13 @@ use std::f32::consts::PI;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crate::battle_cam::patch_locations::Z_FIX_DELTA_GROUND_ADDR;
-use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use rust_hooking_utils::raw_input::key_manager::{KeyState, KeyboardManager};
 use windows::Win32::Foundation::POINT;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_H, VK_LBUTTON};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
+use crate::battle_cam::patch_locations::Z_FIX_DELTA_GROUND_ADDR;
+use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use crate::config::FreecamConfig;
 use crate::data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 use crate::mouse::ScrollTracker;
@@ -108,7 +108,6 @@ pub struct BattleState {
     // Patch related state
     old_cursor_pos: POINT,
     last_left_click: Instant,
-    is_moving_toward_unit: bool,
     /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
     z_diff: f32,
 }
@@ -128,7 +127,6 @@ impl BattleState {
             velocity: Default::default(),
             last_left_click: Instant::now(),
             custom_camera: Default::default(),
-            is_moving_toward_unit: false,
             z_diff: 0.0,
             remote_data: remote,
         }
@@ -229,34 +227,8 @@ impl BattleState {
             self.sync_custom_camera(conf);
         }
 
-        unsafe {
-            let teleport_location = &mut *self.remote_data.teleport_location.get();
-            // Check if all are different (in case of mid-write check).
-            if teleport_location.is_available() {
-                self.custom_camera.x = teleport_location.x;
-                self.custom_camera.y = teleport_location.y;
-                self.custom_camera.z = teleport_location.z;
-
-                let target_pos = self
-                    .battle_patcher
-                    .patcher
-                    .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
-                let view_struct = BattleCameraView {
-                    x_coord: teleport_location.x,
-                    z_coord: teleport_location.z,
-                    y_coord: teleport_location.y,
-                };
-                let (pitch, yaw) = calculate_pitch_yaw(&view_struct, target_pos);
-                self.custom_camera.pitch = pitch;
-                self.custom_camera.yaw = yaw;
-
-                // Update for maintaining relative height
-                self.z_diff = self.custom_camera.z - self.get_ground_z_level();
-
-                // Reset values.
-                *teleport_location = Default::default();
-            }
-        }
+        // Handle camera teleportation
+        self.bc_handle_camera_teleport(conf);
 
         // Handle scroll
         self.bc_handle_scroll(scroll, conf, vertical_speed);
@@ -307,6 +279,37 @@ impl BattleState {
         Ok(())
     }
 
+    /// Handle the case where a user double clicks a unit card, and then presses a movement key to instantly teleport the
+    /// camera toward the given unit.
+    unsafe fn bc_handle_camera_teleport(&mut self, conf: &mut FreecamConfig) {
+        let teleport_location = self.remote_data.teleport_location.as_mut();
+        // Check if all are different (in case of mid-write check).
+        if teleport_location.is_available() {
+            self.custom_camera.x = teleport_location.x;
+            self.custom_camera.y = teleport_location.y;
+            self.custom_camera.z = teleport_location.z;
+
+            let target_pos = self
+                .battle_patcher
+                .patcher
+                .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
+            let view_struct = BattleCameraView {
+                x_coord: teleport_location.x,
+                z_coord: teleport_location.z,
+                y_coord: teleport_location.y,
+            };
+            let (pitch, yaw) = calculate_pitch_yaw(&view_struct, target_pos);
+            self.custom_camera.pitch = pitch;
+            self.custom_camera.yaw = yaw;
+
+            // Update for maintaining relative height
+            self.z_diff = self.custom_camera.z - self.get_ground_z_level();
+
+            // Reset values.
+            *teleport_location = Default::default();
+        }
+    }
+
     unsafe fn bc_handle_left_click(&mut self, key_man: &mut KeyboardManager, point: POINT) {
         if key_man.get_key_state(VK_LBUTTON) == KeyState::Pressed {
             let now = Instant::now();
@@ -317,7 +320,6 @@ impl BattleState {
                 && (self.old_cursor_pos.x - point.x).abs() < 10
                 && (self.old_cursor_pos.y - point.y).abs() < 10
             {
-                self.is_moving_toward_unit = true;
                 self.change_battle_state(true);
             }
         }
@@ -537,7 +539,7 @@ impl BattlePatcher {
         patches::apply_general_z_remote_patch(&mut general_patcher, remote_data);
         // Special (dynamic) patches.
         let teleport_patch = unsafe {
-            let teleport_patch = patches::create_unit_card_teleport_patch(remote_data.teleport_location.get())
+            let teleport_patch = patches::create_unit_card_teleport_patch(remote_data.teleport_location.get_mut_ptr())
                 .expect("Failed to create teleport patch");
             teleport_patch.apply_to_patcher(&mut special_patcher);
             teleport_patch

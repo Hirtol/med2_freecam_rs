@@ -1,6 +1,6 @@
 use crate::patcher::LocalPatcher;
+use crate::ptr::GameCell;
 use iced_x86::code_asm::{dword_ptr, eax, ebx, esi, esp, CodeAssembler};
-use std::cell::UnsafeCell;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// be present.
 #[derive(Default, Clone)]
 pub struct RemoteData {
-    pub teleport_location: Arc<UnsafeCell<BattleUnitCameraTeleport>>,
+    pub teleport_location: Arc<GameCell<BattleUnitCameraTeleport>>,
     /// Taking advantage of the fact that mov's are (?) atomic in x86.
     pub remote_z: Arc<AtomicU32>,
 }
@@ -18,7 +18,7 @@ pub struct RemoteData {
 impl Debug for RemoteData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteData")
-            .field("teleport_location", &unsafe { *self.teleport_location.get() })
+            .field("teleport_location", self.teleport_location.as_ref())
             .field("remote_z", &f32::from_bits(self.remote_z.load(Ordering::SeqCst)))
             .finish()
     }

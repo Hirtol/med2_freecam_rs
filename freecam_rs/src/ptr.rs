@@ -1,8 +1,39 @@
 use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::cell::UnsafeCell;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
+
+/// Highly unsafe Cell type used for interfacing with game patches.
+///
+/// Patches would write to this memory, usually without synchronisation.
+/// Breaks several Rust guarantees with regard to exclusive `mut` ownership. If something mis-compiles, this is likely to blame.
+#[derive(Default, Debug)]
+#[repr(transparent)]
+pub struct GameCell<T: ?Sized>(UnsafeCell<T>);
+
+impl<T> GameCell<T> {
+    pub fn new(item: T) -> Self {
+        Self(UnsafeCell::new(item))
+    }
+
+    pub unsafe fn as_ref(&self) -> &T {
+        &*self.0.get()
+    }
+
+    pub unsafe fn as_mut(&self) -> &mut T {
+        &mut *self.0.get()
+    }
+
+    pub const fn get_ptr(&self) -> *const T {
+        self.0.get()
+    }
+
+    pub const fn get_mut_ptr(&self) -> *mut T {
+        self.0.get()
+    }
+}
 
 #[derive(serde::Deserialize, Clone, Copy, PartialEq, PartialOrd)]
 #[serde(transparent)]
