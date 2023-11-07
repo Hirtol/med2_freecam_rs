@@ -1,8 +1,14 @@
 use crate::patcher::LocalPatcher;
 use crate::ptr::NonNullPtr;
 
+/// Contains the delta value between the current game camera `z` and the ground.
+///
+/// This is seemingly used to a constant elevation for the camera whilst moving around.
 pub const Z_FIX_DELTA_GROUND_ADDR: usize = 0x0193F364;
 
+/// All locations where writes to camera coordinates occur.
+///
+/// These patches can be disabled when needed to allow base-game functionality to happen (such as panning towards units upon double clicking).
 pub const PATCH_LOCATIONS_STEAM: [usize; 74] = [
     // Camera X
     0x008F8E10, 0x008F8B50, 0x00E7EF6A, 0x0094FCDC, 0x008FAC69, 0x008F8C6C, 0x008F9439, 0x0095B40E,
@@ -38,7 +44,7 @@ pub unsafe fn patch_logic(address: &mut NonNullPtr<u8>, patcher: &mut LocalPatch
     let length = if (*patcher.read(address.as_ref())) == 0xF3 { 5 } else { 3 };
     //The 243 or F3 byte means that the operation in total is 5 bytes long.
     //Otherwise the operation is 3 bytes long. This works for this program as these are the only possibilities
-    let to_patch = vec![144; length];
+    let to_patch = vec![0x90; length];
 
     // Don't immediately activate the patches, causes crashes.
     patcher.patch(address.as_mut(), &to_patch, false);

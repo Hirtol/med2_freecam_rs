@@ -10,8 +10,14 @@ use std::sync::Arc;
 /// be present.
 #[derive(Default, Clone)]
 pub struct RemoteData {
+    /// Contains the values for a camera teleport. Relevant for when a unit card is double clicked (and a user presses a movement button after).
     pub teleport_location: Arc<GameCell<BattleUnitCameraTeleport>>,
-    /// Taking advantage of the fact that mov's are (?) atomic in x86.
+    /// The `remote_z` value is the value that the game _would've_ written to the camera's `z` coordinate if those writes
+    /// weren't patched out. We instead redirect those writes to this variable to make use of it later to calculate the
+    /// ground's `z` coordinates. Note that this `remote_z` seems to completely ignore the values we write to the rendered camera's address.
+    /// (Presumably it uses the authoritative Z location at `0x0193d580`). It therefore changes based on the base game's scrolling behaviour.
+    ///
+    /// Note that this is currently only updated when the user provides movement input (as that is when the game tries to update the coordinate).
     pub remote_z: Arc<AtomicU32>,
 }
 
@@ -24,6 +30,7 @@ impl Debug for RemoteData {
     }
 }
 
+/// All `0.0` values indicate an uninitialized teleport.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[repr(C)]
 pub struct BattleUnitCameraTeleport {
@@ -136,11 +143,14 @@ pub unsafe fn create_unit_card_teleport_patch(
     Ok((teleport_intercept, target_view))
 }
 
+/// Create and apply the (static) [crate::battle_cam::RemoteData::remote_z] patch.
+///
+/// See the documentation [here](crate::battle_cam::RemoteData::remote_z) for more information.
 pub fn apply_general_z_remote_patch(patcher: &mut LocalPatcher, remote_data: &RemoteData) {
     // One of the `movss` which moved values to the battlecam address _anyway_
     // We have 15 bytes of `nops` atm at that address.
-    let address_to_patch = 0x008F8C6C;
-    let address_to_patch_2 = 0x008F9439;
+    const FIRST_WRITE_ADDR: usize = 0x008F8C6C;
+    const SECOND_WRITE_ADDR: usize = 0x008F9439;
     let address = (remote_data.remote_z.as_ptr() as u32).to_le_bytes();
 
     // 0:  52                      push   edx
@@ -151,21 +161,8 @@ pub fn apply_general_z_remote_patch(patcher: &mut LocalPatcher, remote_data: &Re
         0x52, 0xBA, address[0], address[1], address[2], address[3], 0xF3, 0x0F, 0x11, 0x0A, 0x5A,
     ];
 
-    unsafe { patcher.patch(address_to_patch as *mut u8, &assembly_patch, false) }
+    unsafe { patcher.patch(FIRST_WRITE_ADDR as *mut u8, &assembly_patch, false) }
     // 6:  f3 0f 11 02             movss  DWORD PTR [edx],xmm0
     assembly_patch[9] = 0x02;
-    unsafe { patcher.patch(address_to_patch_2 as *mut u8, &assembly_patch, false) }
-    // TODO: Do the same above thing, but for _all_ pointers instead of `NOPing`  them
-    // At the very least do the numbered ones here, as they're the ones which `teleport` us when double clicking a unit!
-    // ALSO TODO: Remove the below from the standard patch list!
-    // 52     "0x8F8E8B",
-    //     "0x95B7F4",
-    //
-    //
-    // 66     "0x8F8E97",
-    //     "0x95B805",
-    //
-    //
-    // 82     "0x8F8E91",
-    //     "0x95B7FC",
+    unsafe { patcher.patch(SECOND_WRITE_ADDR as *mut u8, &assembly_patch, false) }
 }

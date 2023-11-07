@@ -501,6 +501,9 @@ impl BattleState {
     }
 
     /// Return the current ground z-level
+    /// 
+    /// We don't know the method/values directly, so we simply subtract the current [Z_FIX_DELTA_GROUND_ADDR] from the game's
+    /// `remote_z` value
     fn get_ground_z_level(&self) -> f32 {
         unsafe {
             f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst))
