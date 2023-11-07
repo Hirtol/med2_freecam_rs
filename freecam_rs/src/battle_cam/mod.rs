@@ -289,16 +289,17 @@ impl BattleState {
             self.custom_camera.y = teleport_location.y;
             self.custom_camera.z = teleport_location.z;
 
-            let target_pos = self
-                .battle_patcher
-                .patcher
-                .mut_read(conf.addresses.battle_cam_target_addr.as_mut());
+            let target_pos = BattleCameraTargetView {
+                x_coord: teleport_location.x_target,
+                z_coord: teleport_location.z_target,
+                y_coord: teleport_location.y_target,
+            };
             let view_struct = BattleCameraView {
                 x_coord: teleport_location.x,
                 z_coord: teleport_location.z,
                 y_coord: teleport_location.y,
             };
-            let (pitch, yaw) = calculate_pitch_yaw(&view_struct, target_pos);
+            let (pitch, yaw) = calculate_pitch_yaw(&view_struct, &target_pos);
             self.custom_camera.pitch = pitch;
             self.custom_camera.yaw = yaw;
 
@@ -538,17 +539,20 @@ impl BattlePatcher {
 
         patches::apply_general_z_remote_patch(&mut general_patcher, remote_data);
         // Special (dynamic) patches.
-        let teleport_patch = unsafe {
-            let teleport_patch = patches::create_unit_card_teleport_patch(remote_data.teleport_location.get_mut_ptr())
-                .expect("Failed to create teleport patch");
+        let (teleport_patch, target_write_patch) = unsafe {
+            let (teleport_patch, target_write_patch) =
+                patches::create_unit_card_teleport_patch(remote_data.teleport_location.get_mut_ptr())
+                    .expect("Failed to create teleport patch");
             teleport_patch.apply_to_patcher(&mut special_patcher);
-            teleport_patch
+            target_write_patch.apply_to_patcher(&mut special_patcher);
+
+            (teleport_patch, target_write_patch)
         };
 
         Self {
             patcher: general_patcher,
             special_patcher,
-            dynamic_patches: vec![teleport_patch],
+            dynamic_patches: vec![teleport_patch, target_write_patch],
             state: BattlePatchState::NotApplied,
         }
     }

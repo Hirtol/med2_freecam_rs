@@ -72,7 +72,7 @@ impl DynamicPatch {
 /// Create a patch for redirecting the writes to the camera's position when a user completes a unit card teleport click.
 pub unsafe fn create_unit_card_teleport_patch(
     teleport_struct_addr: *mut BattleUnitCameraTeleport,
-) -> anyhow::Result<DynamicPatch> {
+) -> anyhow::Result<(DynamicPatch, DynamicPatch)> {
     const PATCH_ADDR: usize = 0x8F8E8B;
     // The assembler executing the code we want
     let mut a = CodeAssembler::new(32)?;
@@ -90,7 +90,7 @@ pub unsafe fn create_unit_card_teleport_patch(
 
     // Save the current `eax` register. Load the address for the Target coordinates
     a.push(eax)?;
-    //
+    // Game uses `esp + 0x0C`, but we push 2 values onto the stack before this point, so we'll need an additional 0x8 offset.
     a.mov(eax, dword_ptr(esp + 0x14))?;
     // X coord Target
     a.mov(esi, dword_ptr(eax))?;
@@ -121,11 +121,19 @@ pub unsafe fn create_unit_card_teleport_patch(
         0x53, 0xBB, addr[0], addr[1], addr[2], addr[3], 0xFF, 0xE3, 0x5B, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
     ];
 
-    Ok(DynamicPatch {
+    let teleport_intercept = DynamicPatch {
         patch_addr: PATCH_ADDR,
         source_loc: Box::new(source_jump),
         dynamic_code,
-    })
+    };
+    // 11 NOPS for removing the writes to `target_view` addresses at 0x8F8EB7
+    let target_view = DynamicPatch {
+        patch_addr: 0x8F8EB7,
+        source_loc: Box::new([0x90; 17]),
+        dynamic_code: Box::new([]),
+    };
+
+    Ok((teleport_intercept, target_view))
 }
 
 pub fn apply_general_z_remote_patch(patcher: &mut LocalPatcher, remote_data: &RemoteData) {
