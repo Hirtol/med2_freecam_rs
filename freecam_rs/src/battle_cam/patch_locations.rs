@@ -1,15 +1,4 @@
 use crate::patcher::LocalPatcher;
-use crate::ptr::NonNullPtr;
-
-/// Contains the delta value between the current game camera `z` and the ground.
-///
-/// This is seemingly used to a constant elevation for the camera whilst moving around.
-pub const Z_FIX_DELTA_GROUND_ADDR: usize = 0x0193F364;
-
-pub const BATTLE_ONGOING_ADDR: usize = 0x193D683;
-pub const BATTLE_CAM_CONF_TYPE_ADDR: usize = 0x1639F14;
-pub const BATTLE_CAM_ADDR: usize = 0x193D598;
-pub const BATTLE_CAM_TARGET_ADDR: usize = 0x193D5DC;
 
 /// All locations where writes to camera coordinates occur.
 ///

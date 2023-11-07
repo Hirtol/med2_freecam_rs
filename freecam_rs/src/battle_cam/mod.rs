@@ -7,13 +7,14 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-use crate::battle_cam::patch_locations::Z_FIX_DELTA_GROUND_ADDR;
 use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use crate::config::FreecamConfig;
-use crate::data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 use crate::mouse::ScrollTracker;
 use crate::patcher::LocalPatcher;
+use data::Z_FIX_DELTA_GROUND_ADDR;
+use data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 
+pub mod data;
 pub mod patch_locations;
 mod patches;
 
@@ -67,7 +68,7 @@ impl BattleCamera {
         // Handle state transitions
         match self.current_state {
             BattleCameraState::OutsideBattle if in_battle => {
-                self.current_state = BattleCameraState::InBattle(BattleState::new(conf));
+                self.current_state = BattleCameraState::InBattle(BattleState::new());
                 Ok(())
             }
             BattleCameraState::InBattle(ref mut state) if in_battle => state.run(scroll, key_man, t_delta, conf),
@@ -91,7 +92,7 @@ impl BattleCamera {
     }
 
     pub fn is_in_battle(&self) -> bool {
-        unsafe { *self.patcher.read(patch_locations::BATTLE_ONGOING_ADDR as *const u32) != 0 }
+        unsafe { *self.patcher.read(data::BATTLE_ONGOING_ADDR) != 0 }
     }
 }
 
@@ -116,7 +117,7 @@ impl BattleState {
     /// Create a new ephemeral [BattleState] instance.
     ///
     /// A new struct should be created for each new battle.
-    pub fn new(conf: &mut FreecamConfig) -> Self {
+    pub fn new() -> Self {
         let mut point = POINT::default();
         let _ = unsafe { GetCursorPos(&mut point) };
         let remote = RemoteData::default();
@@ -147,10 +148,9 @@ impl BattleState {
     ) -> anyhow::Result<()> {
         if conf.force_ttw_camera {
             // Always ensure we're on the TotalWar cam
-            self.battle_patcher.patcher.write(
-                patch_locations::BATTLE_CAM_CONF_TYPE_ADDR as *mut BattleCameraType,
-                BattleCameraType::TotalWar,
-            );
+            self.battle_patcher
+                .patcher
+                .write(data::BATTLE_CAM_CONF_TYPE_ADDR, BattleCameraType::TotalWar);
         }
 
         println!("Remote data: {:#?}", self.remote_data);
@@ -216,11 +216,11 @@ impl BattleState {
             || (self.custom_camera.y - camera_pos.y_coord).abs() > f32::EPSILON
             || (self.custom_camera.z - camera_pos.z_coord).abs() > f32::EPSILON
         {
-            self.sync_custom_camera(conf);
+            self.sync_custom_camera();
         }
 
         // Handle camera teleportation
-        self.bc_handle_camera_teleport(conf);
+        self.bc_handle_camera_teleport();
 
         // Handle scroll
         self.bc_handle_scroll(scroll, conf, vertical_speed);
@@ -260,7 +260,7 @@ impl BattleState {
             write_pitch_yaw(camera_pos, target_pos, self.custom_camera.pitch, self.custom_camera.yaw);
         } else {
             // Update our custom camera values.
-            self.sync_custom_camera(conf);
+            self.sync_custom_camera();
         }
 
         // Persist info for next loop
@@ -270,7 +270,7 @@ impl BattleState {
 
     /// Handle the case where a user double clicks a unit card, and then presses a movement key to instantly teleport the
     /// camera toward the given unit.
-    unsafe fn bc_handle_camera_teleport(&mut self, conf: &mut FreecamConfig) {
+    unsafe fn bc_handle_camera_teleport(&mut self) {
         let teleport_location = self.remote_data.teleport_location.as_mut();
         // Check if all are different (in case of mid-write check).
         if teleport_location.is_available() {
@@ -466,7 +466,7 @@ impl BattleState {
         }
     }
 
-    unsafe fn sync_custom_camera(&mut self, conf: &mut FreecamConfig) {
+    unsafe fn sync_custom_camera(&mut self) {
         let target_pos = self.get_game_target_camera();
         let camera_pos = self.get_game_camera();
 
@@ -490,27 +490,23 @@ impl BattleState {
     fn get_ground_z_level(&self) -> f32 {
         unsafe {
             f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst))
-                - *self.battle_patcher.patcher.read(Z_FIX_DELTA_GROUND_ADDR as *const f32)
+                - *self.battle_patcher.patcher.read(Z_FIX_DELTA_GROUND_ADDR)
         }
     }
 
     unsafe fn get_game_camera<'a, 'b>(&'a self) -> &'b mut BattleCameraView {
-        self.battle_patcher
-            .patcher
-            .mut_read(patch_locations::BATTLE_CAM_ADDR as *mut BattleCameraView)
+        self.battle_patcher.patcher.mut_read(data::BATTLE_CAM_ADDR)
     }
 
     unsafe fn get_game_target_camera<'a, 'b>(&'a self) -> &'b mut BattleCameraTargetView {
-        self.battle_patcher
-            .patcher
-            .mut_read(patch_locations::BATTLE_CAM_TARGET_ADDR as *mut BattleCameraTargetView)
+        self.battle_patcher.patcher.mut_read(data::BATTLE_CAM_TARGET_ADDR)
     }
 }
 
 pub struct BattlePatcher {
     patcher: LocalPatcher,
     special_patcher: LocalPatcher,
-    dynamic_patches: Vec<DynamicPatch>,
+    _dynamic_patches: Vec<DynamicPatch>,
     state: BattlePatchState,
 }
 
@@ -550,7 +546,7 @@ impl BattlePatcher {
         Self {
             patcher: general_patcher,
             special_patcher,
-            dynamic_patches: vec![teleport_patch, target_write_patch],
+            _dynamic_patches: vec![teleport_patch, target_write_patch],
             state: BattlePatchState::NotApplied,
         }
     }

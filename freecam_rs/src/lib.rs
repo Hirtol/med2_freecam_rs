@@ -13,9 +13,7 @@ use crate::mouse::ScrollTracker;
 use crate::patcher::LocalPatcher;
 
 mod config;
-mod data;
 mod mouse;
-mod ptr;
 
 mod battle_cam;
 mod patcher;
@@ -83,7 +81,7 @@ fn reload_config(
     battle_cam: &mut BattleCamera,
 ) -> anyhow::Result<FreecamConfig> {
     log::debug!("Reloading config");
-    let mut conf = config::load_config(config_dir)?;
+    let conf = config::load_config(config_dir)?;
 
     // Open/close console
     if old.console && !conf.console {
