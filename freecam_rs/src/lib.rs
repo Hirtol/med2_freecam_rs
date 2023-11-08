@@ -4,8 +4,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use log::LevelFilter;
+use rust_hooking_utils::patching::process::GameProcess;
 use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
-use windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, VIRTUAL_KEY};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextA, GetWindowTextW};
 
 use crate::battle_cam::BattleCamera;
 use crate::config::FreecamConfig;
@@ -40,9 +42,20 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     log::info!("Loaded config: {:#?}", conf);
 
+    // Initially our console is the first thing that pops up and thus counts as the main window...
+    let main_window = loop {
+        if let Ok(wnd) = GameProcess::current_process().get_main_window() {
+            if wnd.title().starts_with("M") {
+                break wnd;
+            }
+        }
+    };
+
+    log::info!("Found main window: {:?} ({:?})", main_window.title(), main_window.0);
+
     let mut key_manager = KeyboardManager::new();
     let mut update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
-    let mut scroll_tracker = ScrollTracker::new()?;
+    let mut scroll_tracker = ScrollTracker::new(main_window, hinst_dll, conf.block_game_middle_mouse_functionality)?;
     let mut battle_cam = BattleCamera::new(LocalPatcher::new());
 
     let mut last_update = Instant::now();
@@ -55,7 +68,10 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
             }
 
             unsafe {
-                battle_cam.run(&mut conf, &mut scroll_tracker, &mut key_manager, last_update.elapsed())?;
+                // Only run if we're in the foreground. A bit hacky, but eh...
+                if GetForegroundWindow() == main_window.0 {
+                    battle_cam.run(&mut conf, &mut scroll_tracker, &mut key_manager, last_update.elapsed())?;
+                }
             }
 
             last_update = Instant::now();

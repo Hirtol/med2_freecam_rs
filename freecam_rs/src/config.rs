@@ -14,12 +14,16 @@ pub struct FreecamConfig {
     pub update_rate: u16,
     /// If set, will allow the config to be reloaded during gameplay by providing the given key codes.
     pub reload_config_keys: Option<Vec<u16>>,
-    pub keybinds: KeybindsConfig,
-    pub camera: CameraConfig,
     /// Any camera other than the `TotalWarCamera` (index 0) tends to bug out when going to a different unit.
     ///
     /// Forcing an override on every game start seems the most logical.
     pub force_ttw_camera: bool,
+    /// Whether the base game's middle mouse functionality should be blocked during battles.
+    /// 
+    /// Setting this to `true` allows the use of middle mouse button for the freecam.
+    pub block_game_middle_mouse_functionality: bool,
+    pub keybinds: KeybindsConfig,
+    pub camera: CameraConfig,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -91,7 +95,7 @@ impl Default for KeybindsConfig {
             exit_key: 0x23,
             fast_key: 0x10,
             slow_key: 0x12,
-            freecam_key: 0x06,
+            freecam_key: 0x04,
             forward_key: 0x57,
             backwards_key: 0x53,
             left_key: 0x41,
@@ -111,6 +115,7 @@ impl Default for FreecamConfig {
             keybinds: Default::default(),
             camera: Default::default(),
             force_ttw_camera: true,
+            block_game_middle_mouse_functionality: true,
         }
     }
 }

@@ -108,3 +108,11 @@ impl<T> GameCell<T> {
         self.0.get()
     }
 }
+
+/// Check whether we're currently in a battle or not.
+///
+/// Hacky work-around for now.
+/// Not compatible with remote process approach.
+pub fn is_in_battle() -> bool {
+    unsafe { *BATTLE_ONGOING_ADDR != 0 }
+}
