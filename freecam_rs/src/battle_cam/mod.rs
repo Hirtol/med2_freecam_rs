@@ -271,6 +271,7 @@ impl BattleState {
         let teleport_location = self.remote_data.teleport_location.as_mut();
         // Check if all are different (in case of mid-write check).
         if teleport_location.is_available() {
+            log::info!("Teleporting camera to: {:#?}", teleport_location);
             self.custom_camera.x = teleport_location.x;
             self.custom_camera.y = teleport_location.y;
             self.custom_camera.z = teleport_location.z;
