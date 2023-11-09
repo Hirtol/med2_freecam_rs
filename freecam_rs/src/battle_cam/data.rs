@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-macro_rules! data_pointers {
+macro_rules! game_pointers {
     ($
     (
         $(#[$inner:ident $($args:tt)*])*
@@ -13,7 +13,18 @@ macro_rules! data_pointers {
     };
 }
 
-data_pointers!(
+/// Game function which re-calculates the camera's Z coordinates and clips them appropriately.
+///
+/// Normally only called when the user moves/scrolls the vanilla camera.
+pub static CALCULATE_DELTA_Z_TO_GROUND_FN_ADDR: usize = 0x0094ea00;
+/// The first pointer should point to an array of at least 3 elements.
+///
+/// The second pointer is the reference to `Z_FIX_DELTA_GROUND_ADDR`.
+///
+/// The third argument always seems to be `1`.
+pub type CalcDeltaFn = unsafe extern "stdcall" fn(*mut f32, *mut f32, f32);
+
+game_pointers!(
     /// Contains the delta value between the current game camera `z` and the ground.
     ///
     /// This is seemingly used to a constant elevation for the camera whilst moving around.

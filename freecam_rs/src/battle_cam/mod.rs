@@ -254,7 +254,7 @@ impl BattleState {
 
         Self::bc_smooth_decay_velocity(&mut self.velocity, conf);
 
-        self.bc_restrict_coordinates(conf);
+        self.bc_restrict_coordinates(&acceleration, conf);
 
         if matches!(self.battle_patcher.state, BattlePatchState::Applied) {
             // Important that this runs _before_ pitch/yaw adjustment as they're dependent.
@@ -414,7 +414,7 @@ impl BattleState {
         }
     }
 
-    fn bc_restrict_coordinates(&mut self, conf: &mut FreecamConfig) {
+    fn bc_restrict_coordinates(&mut self, acceleration: &Acceleration, conf: &mut FreecamConfig) {
         self.custom_camera.x = 900.0f32.min((-900.0f32).max(self.custom_camera.x));
         self.custom_camera.y = 900.0f32.min((-900.0f32).max(self.custom_camera.y));
         self.custom_camera.z = 2400.0f32.min(self.custom_camera.z);
@@ -447,7 +447,32 @@ impl BattleState {
             {
                 self.custom_camera.z = (self.get_ground_z_level() + clip_margin).max(self.custom_camera.z);
             }
+
+            // Force the game to re-evaluate the ground position relative to the camera and update its Z coordinate.
+            // We need to do this as our velocity decays over time, during which the game is not updating its
+            // Z coordinate because it's no longer receiving input! We need that in order to properly do the above.
+            // We check for acceleration to ensure that we're not actively pressing buttons as an optimisation measure
+            // (as the game would be calling the method itself anyway).
+            if acceleration.y.abs() == 0.
+                && acceleration.x.abs() == 0.
+                && (self.velocity.x.abs() > f32::EPSILON || self.velocity.y.abs() > f32::EPSILON)
+            {
+                unsafe {
+                    self.force_game_height_eval();
+                }
+            }
         }
+    }
+
+    unsafe fn force_game_height_eval(&mut self) {
+        let remote_fn: unsafe extern "stdcall" fn(*mut f32, *mut f32, f32) =
+            std::mem::transmute(data::CALCULATE_DELTA_Z_TO_GROUND_FN_ADDR);
+        // As far as I can tell in Ghidra this uses up to an offset of 0x8 based on the base pointer, so 3 values.
+        // (Specifically, it seems like a delta for the x, z, y coordinates respectively?)
+        // Might be wrong, in which case, stack corruption yay!
+        let mut delta_maybe = [0.0, 0.0, 0.0];
+        // Also, yes, this is completely unsafe when it comes to thread safety.
+        remote_fn(delta_maybe.as_mut_ptr(), Z_FIX_DELTA_GROUND_ADDR, 1.);
     }
 
     unsafe fn bc_calculate_next_velocity(
