@@ -109,10 +109,8 @@ pub struct BattleState {
     remote_data: RemoteData,
     custom_camera: CustomCameraState,
     velocity: Velocity,
-    // Patch related state
-    old_cursor_pos: POINT,
-    last_left_click: Instant,
-    // Panning
+    /// For panning
+    last_sync_time: Option<Instant>,
     last_cursor_pos_freecam: Option<POINT>,
     /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
     z_diff: f32,
@@ -123,19 +121,16 @@ impl BattleState {
     ///
     /// A new struct should be created for each new battle.
     pub fn new() -> Self {
-        let mut point = POINT::default();
-        let _ = unsafe { GetCursorPos(&mut point) };
         let remote = RemoteData::default();
 
         Self {
             battle_patcher: BattlePatcher::new(&remote),
-            old_cursor_pos: point,
             velocity: Default::default(),
-            last_left_click: Instant::now(),
             custom_camera: Default::default(),
             z_diff: 0.0,
             remote_data: remote,
             last_cursor_pos_freecam: Default::default(),
+            last_sync_time: None,
         }
     }
 
@@ -196,9 +191,6 @@ impl BattleState {
 
         // Write to the addresses
         write_pitch_yaw(camera_pos, target_pos, pitch, yaw);
-
-        // Persist info for next loop
-        self.old_cursor_pos = point;
         Ok(())
     }
 
@@ -217,11 +209,14 @@ impl BattleState {
         GetCursorPos(&mut point)?;
 
         // If some external source modified it with our consent we should probably update our camera.
+        // This can happen when the user double clicked on the map or a unit and started panning towards them.
         if (self.custom_camera.x - camera_pos.x_coord).abs() > f32::EPSILON
             || (self.custom_camera.y - camera_pos.y_coord).abs() > f32::EPSILON
             || (self.custom_camera.z - camera_pos.z_coord).abs() > f32::EPSILON
         {
             self.sync_custom_camera();
+            // Track the last time we had to sync the data for use in a hack in `bc_restrict_coordinates`.
+            self.last_sync_time = Some(Instant::now());
         }
 
         // Handle camera teleportation
@@ -229,9 +224,6 @@ impl BattleState {
 
         // Handle scroll
         self.bc_handle_scroll(scroll, conf, vertical_speed);
-
-        // Detect double click (vanilla functionality retention)
-        self.bc_handle_left_click(key_man, point);
 
         // Adjust based on free-cam movement
         self.bc_handle_panning(key_man, scroll, conf, &mut acceleration, point, true);
@@ -267,8 +259,6 @@ impl BattleState {
             self.sync_custom_camera();
         }
 
-        // Persist info for next loop
-        self.old_cursor_pos = point;
         Ok(())
     }
 
@@ -302,21 +292,6 @@ impl BattleState {
 
             // Reset values.
             *teleport_location = Default::default();
-        }
-    }
-
-    unsafe fn bc_handle_left_click(&mut self, key_man: &mut KeyboardManager, point: POINT) {
-        if key_man.get_key_state(VK_LBUTTON) == KeyState::Pressed {
-            let now = Instant::now();
-            let time_since_last = now.duration_since(self.last_left_click);
-            self.last_left_click = now;
-
-            if (time_since_last.as_millis() as u32) < GetDoubleClickTime()
-                && (self.old_cursor_pos.x - point.x).abs() < 10
-                && (self.old_cursor_pos.y - point.y).abs() < 10
-            {
-                self.change_battle_state(true);
-            }
         }
     }
 
@@ -421,7 +396,17 @@ impl BattleState {
 
         // TODO: Add a new camera position struct which stores the _final_ value of a camera movement through scroll.
         // Then we can interpolate gradual movement between that state and the current camera position smoothly instead of jittery!
-        if conf.camera.maintain_relative_height {
+
+        // This `last_sync_time` is not a pretty check (and fragile for poorer performance PCs),
+        // but it helps prevent buggy panning towards a particular point on the map (unit panning seems unaffected whether we have this or not).
+        // The main benefit of this is that we can get rid of double click detection entirely. Hack for a hack...
+        if conf.camera.maintain_relative_height
+            && self
+                .last_sync_time
+                .as_ref()
+                .map(|s| s.elapsed() > conf.camera.relative_height_panning_delay)
+                .unwrap_or(true)
+        {
             let new_z_diff = self.custom_camera.z - self.get_ground_z_level();
 
             if self.velocity.z.abs() > f32::EPSILON {
@@ -431,6 +416,9 @@ impl BattleState {
             } else if new_z_diff > self.z_diff {
                 self.custom_camera.z -= new_z_diff - self.z_diff;
             }
+
+            // Can freely reset it now for a small performance improvement.
+            self.last_sync_time = None;
         }
 
         // If we're below the ground we should probably move up!
@@ -510,7 +498,9 @@ impl BattleState {
 
     unsafe fn change_battle_state(&mut self, paused: bool) {
         if paused {
-            self.battle_patcher.change_state(BattlePatchState::SpecialOnlyApplied);
+            // No longer needed as we never set `paused` to true (and thus never need patches removed)
+            // now that double click detection has been removed.
+            // self.battle_patcher.change_state(BattlePatchState::SpecialOnlyApplied);
         } else {
             self.battle_patcher.change_state(BattlePatchState::Applied);
         }
@@ -525,7 +515,6 @@ impl BattleState {
         self.custom_camera.x = camera_pos.x_coord;
         self.custom_camera.y = camera_pos.y_coord;
         self.custom_camera.z = camera_pos.z_coord;
-        self.z_diff = 0.;
         self.remote_data
             .remote_z
             .store(self.custom_camera.z.to_bits(), Ordering::SeqCst);

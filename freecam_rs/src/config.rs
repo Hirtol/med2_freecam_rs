@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Context;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_R, VK_SHIFT};
@@ -19,7 +20,7 @@ pub struct FreecamConfig {
     /// Forcing an override on every game start seems the most logical.
     pub force_ttw_camera: bool,
     /// Whether the base game's middle mouse functionality should be blocked during battles.
-    /// 
+    ///
     /// Setting this to `true` allows the use of middle mouse button for the freecam.
     pub block_game_middle_mouse_functionality: bool,
     pub keybinds: KeybindsConfig,
@@ -41,6 +42,7 @@ pub struct CameraConfig {
     pub fast_multiplier: f32,
     /// Whether to remain at a consistent height level above the terrain when moving the camera.
     pub maintain_relative_height: bool,
+    pub relative_height_panning_delay: Duration,
     /// Whether to try to prevent the camera from clipping through the ground.
     pub prevent_ground_clipping: bool,
     /// How much of a difference there should _at least_ be between the ground level and the current camera position
@@ -66,6 +68,7 @@ impl Default for CameraConfig {
             slow_multiplier: 0.2,
             prevent_ground_clipping: true,
             ground_clip_margin: 1.3,
+            relative_height_panning_delay: Duration::from_millis(25),
         }
     }
 }
