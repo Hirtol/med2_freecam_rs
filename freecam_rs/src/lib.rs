@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowText
 
 use crate::battle_cam::BattleCamera;
 use crate::config::FreecamConfig;
-use crate::mouse::ScrollTracker;
+use crate::mouse::MouseManager;
 use crate::patcher::LocalPatcher;
 
 mod config;
@@ -55,7 +55,7 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     let mut key_manager = KeyboardManager::new();
     let mut update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
-    let mut scroll_tracker = ScrollTracker::new(main_window, hinst_dll, conf.block_game_middle_mouse_functionality)?;
+    let mut scroll_tracker = MouseManager::new(main_window, hinst_dll, conf.block_game_middle_mouse_functionality)?;
     let mut battle_cam = BattleCamera::new(LocalPatcher::new());
 
     let mut last_update = Instant::now();

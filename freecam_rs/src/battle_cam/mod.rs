@@ -5,14 +5,15 @@ use std::time::{Duration, Instant};
 use rust_hooking_utils::raw_input::key_manager::{KeyState, KeyboardManager};
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_LBUTTON};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
+
+use data::Z_FIX_DELTA_GROUND_ADDR;
+use data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 
 use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use crate::config::FreecamConfig;
-use crate::mouse::ScrollTracker;
+use crate::mouse::MouseManager;
 use crate::patcher::LocalPatcher;
-use data::Z_FIX_DELTA_GROUND_ADDR;
-use data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 
 pub mod data;
 pub mod patch_locations;
@@ -59,7 +60,7 @@ impl BattleCamera {
     pub unsafe fn run(
         &mut self,
         conf: &mut FreecamConfig,
-        scroll: &mut ScrollTracker,
+        scroll: &mut MouseManager,
         key_man: &mut KeyboardManager,
         t_delta: Duration,
     ) -> anyhow::Result<()> {
@@ -68,6 +69,8 @@ impl BattleCamera {
         // Handle state transitions
         match self.current_state {
             BattleCameraState::OutsideBattle if in_battle => {
+                // Reset any scroll delta just to be sure.
+                scroll.reset_scroll();
                 self.current_state = BattleCameraState::InBattle(BattleState::new());
                 Ok(())
             }
@@ -109,6 +112,8 @@ pub struct BattleState {
     // Patch related state
     old_cursor_pos: POINT,
     last_left_click: Instant,
+    // Panning
+    last_cursor_pos_freecam: Option<POINT>,
     /// The amount that our scroll differs from Z. Should help the camera remain consistent across terrain.
     z_diff: f32,
 }
@@ -130,6 +135,7 @@ impl BattleState {
             custom_camera: Default::default(),
             z_diff: 0.0,
             remote_data: remote,
+            last_cursor_pos_freecam: Default::default(),
         }
     }
 
@@ -141,7 +147,7 @@ impl BattleState {
 
     pub unsafe fn run(
         &mut self,
-        scroll: &mut ScrollTracker,
+        scroll: &mut MouseManager,
         key_man: &mut KeyboardManager,
         t_delta: Duration,
         conf: &mut FreecamConfig,
@@ -154,7 +160,7 @@ impl BattleState {
         }
 
         if !conf.camera.custom_camera_enabled {
-            self.run_battle_no_custom(key_man, t_delta, conf)
+            self.run_battle_no_custom(scroll, key_man, t_delta, conf)
         } else {
             self.run_battle_custom_camera(scroll, key_man, t_delta, conf)
         }
@@ -162,6 +168,7 @@ impl BattleState {
 
     pub unsafe fn run_battle_no_custom(
         &mut self,
+        mouse_man: &mut MouseManager,
         key_man: &mut KeyboardManager,
         t_delta: Duration,
         conf: &mut FreecamConfig,
@@ -176,7 +183,7 @@ impl BattleState {
         GetCursorPos(&mut point)?;
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(key_man, conf, &mut acceleration, point, false);
+        self.bc_handle_panning(key_man, mouse_man, conf, &mut acceleration, point, false);
 
         // Adjust pitch and yaw
         self.velocity.pitch += acceleration.pitch;
@@ -197,7 +204,7 @@ impl BattleState {
 
     unsafe fn run_battle_custom_camera(
         &mut self,
-        scroll: &mut ScrollTracker,
+        scroll: &mut MouseManager,
         key_man: &mut KeyboardManager,
         t_delta: Duration,
         conf: &mut FreecamConfig,
@@ -227,7 +234,7 @@ impl BattleState {
         self.bc_handle_left_click(key_man, point);
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(key_man, conf, &mut acceleration, point, true);
+        self.bc_handle_panning(key_man, scroll, conf, &mut acceleration, point, true);
 
         // Camera movement
         self.bc_move_camera(key_man, conf, &mut acceleration);
@@ -313,7 +320,7 @@ impl BattleState {
         }
     }
 
-    fn bc_handle_scroll(&mut self, scroll: &mut ScrollTracker, conf: &FreecamConfig, vertical_speed: f32) {
+    fn bc_handle_scroll(&mut self, scroll: &mut MouseManager, conf: &FreecamConfig, vertical_speed: f32) {
         // TODO: Figure out how this works.
         let scroll_delta = scroll.get_scroll_delta() * if conf.camera.inverted_scroll { -1 } else { 1 };
         let is_negative = if scroll_delta != 0 { scroll_delta.abs() / scroll_delta } else { 1 };
@@ -323,20 +330,41 @@ impl BattleState {
     unsafe fn bc_handle_panning(
         &mut self,
         key_man: &mut KeyboardManager,
+        mouse_man: &mut MouseManager,
         conf: &mut FreecamConfig,
         acceleration: &mut Velocity,
         point: POINT,
         should_change_b_state: bool,
     ) {
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.freecam_key)) {
-            let invert = if conf.camera.inverted { -1.0 } else { 1.0 };
-            let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.pan_smoothing);
-            acceleration.pitch -= ((invert * (point.y - self.old_cursor_pos.y) as f32) / 500.) * adjusted_sens;
-            acceleration.yaw -= ((invert * (point.x - self.old_cursor_pos.x) as f32) / 500.) * adjusted_sens;
-            if should_change_b_state {
-                // We should have control again.
-                self.change_battle_state(false);
+        let state = key_man.get_key_state(VIRTUAL_KEY(conf.keybinds.freecam_key));
+        match state {
+            KeyState::Pressed => {
+                let _ = GetCursorPos(self.last_cursor_pos_freecam.get_or_insert(POINT::default()));
+                mouse_man.hide_cursor();
             }
+            KeyState::Down => {
+                if let Some(pos) = self.last_cursor_pos_freecam.as_ref() {
+                    let invert = if conf.camera.inverted { -1.0 } else { 1.0 };
+                    let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.pan_smoothing);
+                    acceleration.pitch -= ((invert * (point.y - pos.y) as f32) / 500.) * adjusted_sens;
+                    acceleration.yaw -= ((invert * (point.x - pos.x) as f32) / 500.) * adjusted_sens;
+
+                    // Reset the cursor position to our set place.
+                    let _ = SetCursorPos(pos.x, pos.y);
+
+                    if should_change_b_state {
+                        // We should have control again.
+                        self.change_battle_state(false);
+                    }
+                }
+            }
+            KeyState::Released => {
+                if let Some(pos) = self.last_cursor_pos_freecam.take() {
+                    let _ = SetCursorPos(pos.x, pos.y);
+                    mouse_man.show_cursor();
+                }
+            }
+            KeyState::Up => {}
         }
     }
 
@@ -412,7 +440,6 @@ impl BattleState {
             let multiplier = if z_bound.is_sign_positive() { 1. } else { -1. };
             let clip_margin = multiplier * conf.camera.ground_clip_margin;
 
-            // !still_changing
             if self.get_ground_z_level() != 0.
                 && !z_bound.is_nan()
                 && z_bound.is_finite()
