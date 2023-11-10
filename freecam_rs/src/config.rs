@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_R, VK_SHIFT};
+use rust_hooking_utils::raw_input::virtual_keys::VirtualKey;
 
 pub const CONFIG_FILE_NAME: &str = "freecam_config.json";
 
@@ -14,7 +14,7 @@ pub struct FreecamConfig {
     /// How often to run our simple update loop.
     pub update_rate: u16,
     /// If set, will allow the config to be reloaded during gameplay by providing the given key codes.
-    pub reload_config_keys: Option<Vec<u16>>,
+    pub reload_config_keys: Option<Vec<VirtualKey>>,
     /// Any camera other than the `TotalWarCamera` (index 0) tends to bug out when going to a different unit.
     ///
     /// Forcing an override on every game start seems the most logical.
@@ -83,33 +83,29 @@ impl Default for CameraConfig {
 /// Expects [virtual key codes](https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes).
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct KeybindsConfig {
-    pub pause_key: u16,
-    pub exit_key: u16,
-    pub fast_key: u16,
-    pub slow_key: u16,
-    pub freecam_key: u16,
-    pub forward_key: u16,
-    pub backwards_key: u16,
-    pub left_key: u16,
-    pub right_key: u16,
-    pub rotate_left: u16,
-    pub rotate_right: u16,
+    pub fast_key: VirtualKey,
+    pub slow_key: VirtualKey,
+    pub freecam_key: VirtualKey,
+    pub forward_key: VirtualKey,
+    pub backwards_key: VirtualKey,
+    pub left_key: VirtualKey,
+    pub right_key: VirtualKey,
+    pub rotate_left: VirtualKey,
+    pub rotate_right: VirtualKey,
 }
 
 impl Default for KeybindsConfig {
     fn default() -> Self {
         Self {
-            pause_key: 0x2D,
-            exit_key: 0x23,
-            fast_key: 0x10,
-            slow_key: 0x12,
-            freecam_key: 0x04,
-            forward_key: 0x57,
-            backwards_key: 0x53,
-            left_key: 0x41,
-            right_key: 0x44,
-            rotate_left: 0x51,
-            rotate_right: 0x45,
+            fast_key: VirtualKey::VK_SHIFT,
+            slow_key: VirtualKey::VK_CONTROL,
+            freecam_key: VirtualKey::VK_MBUTTON,
+            forward_key: VirtualKey::VK_W,
+            backwards_key: VirtualKey::VK_S,
+            left_key: VirtualKey::VK_A,
+            right_key: VirtualKey::VK_D,
+            rotate_left: VirtualKey::VK_Q,
+            rotate_right: VirtualKey::VK_E,
         }
     }
 }
@@ -119,7 +115,7 @@ impl Default for FreecamConfig {
         Self {
             console: true,
             update_rate: 144,
-            reload_config_keys: Some(vec![VK_CONTROL.0, VK_SHIFT.0, VK_R.0]),
+            reload_config_keys: Some(vec![VirtualKey::VK_CONTROL, VirtualKey::VK_SHIFT, VirtualKey::VK_R]),
             keybinds: Default::default(),
             camera: Default::default(),
             force_ttw_camera: true,

@@ -1,6 +1,6 @@
 use crate::battle_cam::data::GameCell;
-use crate::patcher::LocalPatcher;
 use iced_x86::code_asm::{dword_ptr, eax, ebx, esi, esp, CodeAssembler};
+use rust_hooking_utils::patching::LocalPatcher;
 use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;

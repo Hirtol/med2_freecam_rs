@@ -1,4 +1,4 @@
-use crate::patcher::LocalPatcher;
+use rust_hooking_utils::patching::LocalPatcher;
 
 /// All locations where writes to camera coordinates occur.
 ///

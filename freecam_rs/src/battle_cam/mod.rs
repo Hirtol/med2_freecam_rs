@@ -1,3 +1,4 @@
+use rust_hooking_utils::patching::LocalPatcher;
 use std::f32::consts::PI;
 use std::ops::{Add, Div};
 use std::sync::atomic::Ordering;
@@ -5,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use rust_hooking_utils::raw_input::key_manager::{KeyState, KeyboardManager};
 use windows::Win32::Foundation::POINT;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetDoubleClickTime, VIRTUAL_KEY, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos};
 
 use data::Z_FIX_DELTA_GROUND_ADDR;
@@ -14,7 +14,6 @@ use data::{BattleCameraTargetView, BattleCameraType, BattleCameraView};
 use crate::battle_cam::patches::{DynamicPatch, RemoteData};
 use crate::config::FreecamConfig;
 use crate::mouse::MouseManager;
-use crate::patcher::LocalPatcher;
 
 pub mod data;
 pub mod patch_locations;
@@ -322,7 +321,7 @@ impl BattleState {
         point: POINT,
         should_change_b_state: bool,
     ) {
-        let state = key_man.get_key_state(VIRTUAL_KEY(conf.keybinds.freecam_key));
+        let state = key_man.get_key_state(conf.keybinds.freecam_key.into());
         match state {
             KeyState::Pressed => {
                 let _ = GetCursorPos(self.last_cursor_pos_freecam.get_or_insert(POINT::default()));
@@ -361,11 +360,11 @@ impl BattleState {
         acceleration: &mut Velocity,
     ) {
         let pan_speed = 1. - conf.camera.pan_smoothing;
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.rotate_left)) {
+        if key_man.has_pressed(conf.keybinds.rotate_left.into()) {
             acceleration.yaw += 0.03 * pan_speed;
             self.change_battle_state(false);
         }
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.rotate_right)) {
+        if key_man.has_pressed(conf.keybinds.rotate_right.into()) {
             acceleration.yaw -= 0.03 * pan_speed;
             self.change_battle_state(false);
         }
@@ -378,22 +377,22 @@ impl BattleState {
         acceleration: &mut Velocity,
     ) {
         let yaw = self.custom_camera.yaw;
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.forward_key)) {
+        if key_man.has_pressed(conf.keybinds.forward_key.into()) {
             acceleration.y += yaw.sin();
             acceleration.x += yaw.cos();
             self.change_battle_state(false);
         }
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.backwards_key)) {
+        if key_man.has_pressed(conf.keybinds.backwards_key.into()) {
             acceleration.y += (PI + yaw).sin();
             acceleration.x += (PI + yaw).cos();
             self.change_battle_state(false);
         }
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.left_key)) {
+        if key_man.has_pressed(conf.keybinds.left_key.into()) {
             acceleration.y += ((PI / 2.) + yaw).sin();
             acceleration.x += ((PI / 2.) + yaw).cos();
             self.change_battle_state(false);
         }
-        if key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.right_key)) {
+        if key_man.has_pressed(conf.keybinds.right_key.into()) {
             acceleration.y += ((3. * PI / 2.) + yaw).sin();
             acceleration.x += ((3. * PI / 2.) + yaw).cos();
             self.change_battle_state(false);
@@ -683,8 +682,8 @@ fn calculate_pitch_yaw(camera_pos: &BattleCameraView, target_pos: &BattleCameraT
 }
 
 fn calculate_speed_multipliers(conf: &FreecamConfig, key_man: &mut KeyboardManager) -> (f32, f32) {
-    let has_fast = key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.fast_key));
-    let has_slow = key_man.has_pressed(VIRTUAL_KEY(conf.keybinds.slow_key));
+    let has_fast = key_man.has_pressed(conf.keybinds.fast_key.into());
+    let has_slow = key_man.has_pressed(conf.keybinds.slow_key.into());
 
     let multiplier = if has_fast {
         conf.camera.fast_multiplier

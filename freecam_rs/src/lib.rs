@@ -5,20 +5,19 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use log::LevelFilter;
 use rust_hooking_utils::patching::process::GameProcess;
+use rust_hooking_utils::patching::LocalPatcher;
 use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetActiveWindow, VIRTUAL_KEY};
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextA, GetWindowTextW};
+use rust_hooking_utils::raw_input::virtual_keys::VirtualKey;
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::battle_cam::BattleCamera;
 use crate::config::FreecamConfig;
 use crate::mouse::MouseManager;
-use crate::patcher::LocalPatcher;
 
 mod config;
 mod mouse;
 
 mod battle_cam;
-mod patcher;
 
 static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
 
@@ -62,7 +61,7 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     while !SHUTDOWN_FLAG.load(Ordering::Acquire) {
         if let Some(reload) = &conf.reload_config_keys {
-            if key_manager.all_pressed(reload.iter().copied().map(VIRTUAL_KEY)) {
+            if key_manager.all_pressed(reload.iter().copied().map(VirtualKey::to_virtual_key)) {
                 conf = reload_config(config_directory, &mut conf, &mut battle_cam)?;
                 update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
             }
