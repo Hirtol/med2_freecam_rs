@@ -220,7 +220,7 @@ impl BattleState {
         }
 
         // Handle camera teleportation
-        self.bc_handle_camera_teleport();
+        self.bc_handle_camera_teleport(camera_pos);
 
         // Handle scroll
         self.bc_handle_scroll(scroll, conf, vertical_speed);
@@ -249,11 +249,7 @@ impl BattleState {
         self.bc_restrict_coordinates(&acceleration, conf);
 
         if matches!(self.battle_patcher.state, BattlePatchState::Applied) {
-            // Important that this runs _before_ pitch/yaw adjustment as they're dependent.
-            write_custom_camera(&self.custom_camera, camera_pos);
-
-            let target_pos = self.get_game_target_camera();
-            write_pitch_yaw(camera_pos, target_pos, self.custom_camera.pitch, self.custom_camera.yaw);
+            self.write_full_custom_cam(camera_pos);
         } else {
             // Update our custom camera values.
             self.sync_custom_camera();
@@ -264,7 +260,7 @@ impl BattleState {
 
     /// Handle the case where a user double clicks a unit card, and then presses a movement key to instantly teleport the
     /// camera toward the given unit.
-    unsafe fn bc_handle_camera_teleport(&mut self) {
+    unsafe fn bc_handle_camera_teleport(&mut self, camera_pos: &mut BattleCameraView) {
         let teleport_location = self.remote_data.teleport_location.as_mut();
         // Check if all are different (in case of mid-write check).
         if teleport_location.is_available() {
@@ -287,11 +283,15 @@ impl BattleState {
             self.custom_camera.pitch = pitch;
             self.custom_camera.yaw = yaw;
 
-            // Update for maintaining relative height
-            self.z_diff = self.custom_camera.z - self.get_ground_z_level();
-
             // Reset values.
             *teleport_location = Default::default();
+
+            // Need to update the game height here manually or we risk a race condition where the `z_diff` will make
+            // the camera jump up/down on the next frame.
+            self.write_full_custom_cam(camera_pos);
+            self.force_game_height_eval();
+            // Update for maintaining relative height
+            self.z_diff = self.custom_camera.z - self.get_ground_z_level();
         }
     }
 
@@ -522,10 +522,20 @@ impl BattleState {
         self.custom_camera.yaw = yaw;
     }
 
+    unsafe fn write_full_custom_cam(&mut self, camera_pos: &mut BattleCameraView) {
+        // Important that this runs _before_ pitch/yaw adjustment as they're dependent.
+        write_custom_camera(&self.custom_camera, camera_pos);
+
+        let target_pos = self.get_game_target_camera();
+        write_pitch_yaw(camera_pos, target_pos, self.custom_camera.pitch, self.custom_camera.yaw);
+    }
+
     /// Return the current ground z-level
     ///
     /// We don't know the method/values directly, so we simply subtract the current [Z_FIX_DELTA_GROUND_ADDR] from the game's
-    /// `remote_z` value
+    /// `remote_z` value.
+    ///
+    /// Note that this depends on the game's code updating these values. See [Self::force_game_height_eval] for forcing it.
     fn get_ground_z_level(&self) -> f32 {
         unsafe {
             f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst))
