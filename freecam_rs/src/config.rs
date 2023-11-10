@@ -154,25 +154,25 @@ pub fn create_initial_config(directory: impl AsRef<Path>) -> anyhow::Result<()> 
 }
 
 pub fn validate_config(conf: &FreecamConfig) -> anyhow::Result<()> {
-    if (conf.camera.vertical_smoothing.abs() >= 1.) {
+    if conf.camera.vertical_smoothing.abs() >= 1. {
         anyhow::bail!(
             "Smoothening values should be in the range 0..1. Vertical smoothing was `{}`!",
             conf.camera.vertical_smoothing
         )
     }
-    if (conf.camera.horizontal_smoothing.abs() >= 1.) {
+    if conf.camera.horizontal_smoothing.abs() >= 1. {
         anyhow::bail!(
             "Smoothening values should be in the range 0..1. Horizontal smoothing was `{}`!",
             conf.camera.horizontal_smoothing
         )
     }
-    if (conf.camera.rotate_smoothing.abs() >= 1.) {
+    if conf.camera.rotate_smoothing.abs() >= 1. {
         anyhow::bail!(
             "Smoothening values should be in the range 0..1. Rotate smoothing was `{}`!",
             conf.camera.rotate_smoothing
         )
     }
-    if (conf.update_rate < 30) {
+    if conf.update_rate < 30 {
         anyhow::bail!("Update rate must be at least 30, was {}", conf.update_rate)
     }
 
