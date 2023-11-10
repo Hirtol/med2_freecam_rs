@@ -223,7 +223,7 @@ impl BattleState {
         self.bc_handle_camera_teleport(camera_pos);
 
         // Handle scroll
-        self.bc_handle_scroll(scroll, conf, vertical_speed);
+        self.bc_handle_scroll(scroll, conf);
 
         // Adjust based on free-cam movement
         self.bc_handle_panning(key_man, scroll, conf, &mut acceleration, point, true);
@@ -238,9 +238,20 @@ impl BattleState {
         self.velocity =
             Self::bc_calculate_next_velocity(conf, &self.velocity, &acceleration, horizontal_speed, vertical_speed);
 
-        self.custom_camera.x += self.velocity.x;
-        self.custom_camera.y += self.velocity.y;
-        self.custom_camera.z += self.velocity.z;
+        // Modify our velocity depending on how close/far from the ground the camera is.
+        let distance_to_ground_multiplier = if conf.camera.ground_distance_speed {
+            (self.custom_camera.z - self.get_ground_z_level())
+                .div(2.)
+                .abs()
+                .add(1.0)
+                .log10()
+                .abs()
+        } else {
+            1.
+        };
+        self.custom_camera.x += self.velocity.x * distance_to_ground_multiplier;
+        self.custom_camera.y += self.velocity.y * distance_to_ground_multiplier;
+        self.custom_camera.z += self.velocity.z * distance_to_ground_multiplier;
         self.custom_camera.pitch += self.velocity.pitch;
         self.custom_camera.yaw += self.velocity.yaw;
 
@@ -295,11 +306,10 @@ impl BattleState {
         }
     }
 
-    fn bc_handle_scroll(&mut self, scroll: &mut MouseManager, conf: &FreecamConfig, vertical_speed: f32) {
-        // TODO: Figure out how this works.
+    fn bc_handle_scroll(&mut self, scroll: &mut MouseManager, conf: &FreecamConfig) {
         let scroll_delta = scroll.get_scroll_delta() * if conf.camera.inverted_scroll { -1 } else { 1 };
         let is_negative = if scroll_delta != 0 { scroll_delta.abs() / scroll_delta } else { 1 };
-        self.velocity.z += (scroll_delta.pow(2) * is_negative) as f32 * vertical_speed / 10.;
+        self.velocity.z += (scroll_delta.pow(2) * is_negative) as f32 * conf.camera.vertical_base_speed / 4.;
     }
 
     unsafe fn bc_handle_panning(

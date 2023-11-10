@@ -32,6 +32,10 @@ pub struct CameraConfig {
     pub custom_camera_enabled: bool,
     pub inverted: bool,
     pub inverted_scroll: bool,
+    /// Whether to adapt movement/scroll speed to be based on how far from the ground the camera is.
+    ///
+    /// Similar to the Warhammer TTW camera.
+    pub ground_distance_speed: bool,
     pub sensitivity: f32,
     pub pan_smoothing: f32,
     pub vertical_smoothing: f32,
@@ -57,8 +61,9 @@ impl Default for CameraConfig {
             custom_camera_enabled: true,
             inverted: false,
             inverted_scroll: true,
+            ground_distance_speed: true,
             sensitivity: 1.0,
-            pan_smoothing: 0.55,
+            pan_smoothing: 0.75,
             vertical_smoothing: 0.92,
             horizontal_smoothing: 0.92,
             horizontal_base_speed: 1.0,
