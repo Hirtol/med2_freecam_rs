@@ -178,7 +178,7 @@ impl BattleState {
         GetCursorPos(&mut point)?;
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(key_man, mouse_man, conf, &mut acceleration, point, false);
+        self.bc_handle_freecam_rotate(key_man, mouse_man, conf, &mut acceleration, point, false);
 
         // Adjust pitch and yaw
         self.velocity.pitch += acceleration.pitch;
@@ -186,8 +186,8 @@ impl BattleState {
         pitch += self.velocity.pitch;
         yaw += self.velocity.yaw;
 
-        self.velocity.pitch *= conf.camera.pan_smoothing;
-        self.velocity.yaw *= conf.camera.pan_smoothing;
+        self.velocity.pitch *= conf.camera.rotate_smoothing;
+        self.velocity.yaw *= conf.camera.rotate_smoothing;
 
         // Write to the addresses
         write_pitch_yaw(camera_pos, target_pos, pitch, yaw);
@@ -226,7 +226,7 @@ impl BattleState {
         self.bc_handle_scroll(scroll, conf);
 
         // Adjust based on free-cam movement
-        self.bc_handle_panning(key_man, scroll, conf, &mut acceleration, point, true);
+        self.bc_handle_freecam_rotate(key_man, scroll, conf, &mut acceleration, point, true);
 
         // Camera movement
         self.bc_move_camera(key_man, conf, &mut acceleration);
@@ -235,8 +235,13 @@ impl BattleState {
         self.bc_handle_rotation(key_man, conf, &mut acceleration);
 
         // Update velocity based on the new `acceleration`
-        self.velocity =
-            Self::bc_calculate_next_velocity(conf, &self.velocity, &acceleration, horizontal_speed, vertical_speed);
+        Self::bc_calculate_next_velocity(
+            conf,
+            &mut self.velocity,
+            &acceleration,
+            horizontal_speed,
+            vertical_speed,
+        );
 
         // Modify our velocity depending on how close/far from the ground the camera is.
         let distance_to_ground_multiplier = if conf.camera.ground_distance_speed {
@@ -312,7 +317,7 @@ impl BattleState {
         self.velocity.z += (scroll_delta.pow(2) * is_negative) as f32 * conf.camera.vertical_base_speed / 4.;
     }
 
-    unsafe fn bc_handle_panning(
+    unsafe fn bc_handle_freecam_rotate(
         &mut self,
         key_man: &mut KeyboardManager,
         mouse_man: &mut MouseManager,
@@ -330,7 +335,7 @@ impl BattleState {
             KeyState::Down => {
                 if let Some(pos) = self.last_cursor_pos_freecam.as_ref() {
                     let invert = if conf.camera.inverted { -1.0 } else { 1.0 };
-                    let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.pan_smoothing);
+                    let adjusted_sens = conf.camera.sensitivity * (1. - conf.camera.rotate_smoothing);
                     acceleration.pitch -= ((invert * (point.y - pos.y) as f32) / 500.) * adjusted_sens;
                     acceleration.yaw -= ((invert * (point.x - pos.x) as f32) / 500.) * adjusted_sens;
 
@@ -353,13 +358,13 @@ impl BattleState {
         }
     }
 
-    unsafe fn bc_handle_rotation(
+    fn bc_handle_rotation(
         &mut self,
         key_man: &mut KeyboardManager,
         conf: &mut FreecamConfig,
         acceleration: &mut Velocity,
     ) {
-        let pan_speed = 1. - conf.camera.pan_smoothing;
+        let pan_speed = 1. - conf.camera.rotate_smoothing;
         if key_man.has_pressed(conf.keybinds.rotate_left.into()) {
             acceleration.yaw += 0.03 * pan_speed;
             self.change_battle_state(false);
@@ -370,12 +375,7 @@ impl BattleState {
         }
     }
 
-    unsafe fn bc_move_camera(
-        &mut self,
-        key_man: &mut KeyboardManager,
-        conf: &FreecamConfig,
-        acceleration: &mut Velocity,
-    ) {
+    fn bc_move_camera(&mut self, key_man: &mut KeyboardManager, conf: &FreecamConfig, acceleration: &mut Velocity) {
         let yaw = self.custom_camera.yaw;
         if key_man.has_pressed(conf.keybinds.forward_key.into()) {
             acceleration.y += yaw.sin();
@@ -473,46 +473,46 @@ impl BattleState {
         remote_fn(delta_maybe.as_mut_ptr(), Z_FIX_DELTA_GROUND_ADDR, 1.);
     }
 
-    unsafe fn bc_calculate_next_velocity(
+    fn bc_calculate_next_velocity(
         conf: &FreecamConfig,
-        current_velocity: &Velocity,
+        current_velocity: &mut Velocity,
         acceleration: &Acceleration,
         horizontal_speed: f32,
         vertical_speed: f32,
-    ) -> Velocity {
+    ) {
         let mut length = (acceleration.x.powi(2) + acceleration.y.powi(2) + acceleration.z.powi(2)).sqrt();
 
         if length == 0. {
             length = 1.;
         }
 
-        Velocity {
-            x: current_velocity.x
-                + ((acceleration.x / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.,
-            y: current_velocity.y
-                + ((acceleration.y / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.,
-            z: current_velocity.z
-                + ((acceleration.z / length) * (vertical_speed * (1. - conf.camera.vertical_smoothing))) / 2.,
-            pitch: current_velocity.pitch + acceleration.pitch,
-            yaw: current_velocity.yaw + acceleration.yaw,
-        }
+        current_velocity.x +=
+            ((acceleration.x / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.;
+        current_velocity.y +=
+            ((acceleration.y / length) * (horizontal_speed * (1. - conf.camera.horizontal_smoothing))) / 2.;
+        current_velocity.z +=
+            ((acceleration.z / length) * (vertical_speed * (1. - conf.camera.vertical_smoothing))) / 2.;
+        current_velocity.pitch += acceleration.pitch;
+        current_velocity.yaw += acceleration.yaw;
     }
 
     fn bc_smooth_decay_velocity(velocity: &mut Velocity, conf: &FreecamConfig) {
         velocity.x *= conf.camera.horizontal_smoothing;
         velocity.y *= conf.camera.horizontal_smoothing;
         velocity.z *= conf.camera.vertical_smoothing;
-        velocity.pitch *= conf.camera.pan_smoothing;
-        velocity.yaw *= conf.camera.pan_smoothing;
+        velocity.pitch *= conf.camera.rotate_smoothing;
+        velocity.yaw *= conf.camera.rotate_smoothing;
     }
 
-    unsafe fn change_battle_state(&mut self, paused: bool) {
+    fn change_battle_state(&mut self, paused: bool) {
         if paused {
             // No longer needed as we never set `paused` to true (and thus never need patches removed)
             // now that double click detection has been removed.
             // self.battle_patcher.change_state(BattlePatchState::SpecialOnlyApplied);
         } else {
-            self.battle_patcher.change_state(BattlePatchState::Applied);
+            unsafe {
+                self.battle_patcher.change_state(BattlePatchState::Applied);
+            }
         }
     }
 

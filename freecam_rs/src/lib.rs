@@ -4,11 +4,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use log::LevelFilter;
-use rust_hooking_utils::patching::process::GameProcess;
+use rust_hooking_utils::patching::process::{GameProcess, Window};
 use rust_hooking_utils::patching::LocalPatcher;
 use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
 use rust_hooking_utils::raw_input::virtual_keys::VirtualKey;
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::core::HSTRING;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, MessageBoxExW, MB_OK};
 
 use crate::battle_cam::BattleCamera;
 use crate::config::FreecamConfig;
@@ -31,7 +33,9 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     config::create_initial_config(config_directory)?;
 
-    let mut conf = config::load_config(config_directory)?;
+    let Ok(mut conf) = load_validated_config(config_directory, None) else {
+        std::process::exit(1)
+    };
 
     if conf.console {
         unsafe {
@@ -62,7 +66,7 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
     while !SHUTDOWN_FLAG.load(Ordering::Acquire) {
         if let Some(reload) = &conf.reload_config_keys {
             if key_manager.all_pressed(reload.iter().copied().map(VirtualKey::to_virtual_key)) {
-                conf = reload_config(config_directory, &mut conf, &mut battle_cam)?;
+                conf = reload_config(config_directory, &mut conf, &mut battle_cam, main_window.0)?;
                 update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
             }
 
@@ -94,9 +98,10 @@ fn reload_config(
     config_dir: impl AsRef<Path>,
     old: &mut FreecamConfig,
     battle_cam: &mut BattleCamera,
+    parent_window: HWND,
 ) -> anyhow::Result<FreecamConfig> {
     log::debug!("Reloading config");
-    let conf = config::load_config(config_dir)?;
+    let conf = load_validated_config(config_dir.as_ref(), Some(parent_window))?;
 
     // Open/close console
     if old.console && !conf.console {
@@ -118,4 +123,21 @@ fn reload_config(
     log::debug!("New config loaded: {:#?}", conf);
 
     Ok(conf)
+}
+
+fn load_validated_config(config_dir: &Path, parent_window: Option<HWND>) -> anyhow::Result<FreecamConfig> {
+    match config::load_config(config_dir) {
+        Ok(conf) => Ok(conf),
+        Err(e) => unsafe {
+            let message = format!("Error: {}\nFreecam will now exit", e);
+            let _ = MessageBoxExW(
+                parent_window.unwrap_or_default(),
+                &HSTRING::from(message),
+                windows::core::w!("Failed to validate FreeCam config"),
+                MB_OK,
+                0,
+            );
+            Err(e)
+        },
+    }
 }

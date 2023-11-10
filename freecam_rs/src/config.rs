@@ -27,17 +27,33 @@ pub struct FreecamConfig {
     pub camera: CameraConfig,
 }
 
+impl Default for FreecamConfig {
+    fn default() -> Self {
+        Self {
+            console: false,
+            update_rate: 144,
+            reload_config_keys: Some(vec![VirtualKey::VK_CONTROL, VirtualKey::VK_SHIFT, VirtualKey::VK_R]),
+            keybinds: Default::default(),
+            camera: Default::default(),
+            force_ttw_camera: true,
+            block_game_middle_mouse_functionality: true,
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct CameraConfig {
     pub custom_camera_enabled: bool,
+    /// Whether camera rotation is inverted or not.
     pub inverted: bool,
+    /// Whether the mouse scroll is inverted or not
     pub inverted_scroll: bool,
     /// Whether to adapt movement/scroll speed to be based on how far from the ground the camera is.
     ///
     /// Similar to the Warhammer TTW camera.
     pub ground_distance_speed: bool,
     pub sensitivity: f32,
-    pub pan_smoothing: f32,
+    pub rotate_smoothing: f32,
     pub vertical_smoothing: f32,
     pub horizontal_smoothing: f32,
     pub horizontal_base_speed: f32,
@@ -63,7 +79,7 @@ impl Default for CameraConfig {
             inverted_scroll: true,
             ground_distance_speed: true,
             sensitivity: 1.0,
-            pan_smoothing: 0.75,
+            rotate_smoothing: 0.75,
             vertical_smoothing: 0.92,
             horizontal_smoothing: 0.92,
             horizontal_base_speed: 1.0,
@@ -98,7 +114,7 @@ impl Default for KeybindsConfig {
     fn default() -> Self {
         Self {
             fast_key: VirtualKey::VK_SHIFT,
-            slow_key: VirtualKey::VK_CONTROL,
+            slow_key: VirtualKey::VK_MENU,
             freecam_key: VirtualKey::VK_MBUTTON,
             forward_key: VirtualKey::VK_W,
             backwards_key: VirtualKey::VK_S,
@@ -110,25 +126,12 @@ impl Default for KeybindsConfig {
     }
 }
 
-impl Default for FreecamConfig {
-    fn default() -> Self {
-        Self {
-            console: true,
-            update_rate: 144,
-            reload_config_keys: Some(vec![VirtualKey::VK_CONTROL, VirtualKey::VK_SHIFT, VirtualKey::VK_R]),
-            keybinds: Default::default(),
-            camera: Default::default(),
-            force_ttw_camera: true,
-            block_game_middle_mouse_functionality: true,
-        }
-    }
-}
-
 pub fn load_config(directory: impl AsRef<Path>) -> anyhow::Result<FreecamConfig> {
     let path = directory.as_ref().join(CONFIG_FILE_NAME);
     let file = std::fs::read(&path)?;
 
     if let Ok(conf) = serde_json::from_slice(&file) {
+        validate_config(&conf)?;
         Ok(conf)
     } else {
         std::fs::remove_file(&path)?;
@@ -145,6 +148,32 @@ pub fn create_initial_config(directory: impl AsRef<Path>) -> anyhow::Result<()> 
     if !path.exists() {
         let mut file = std::fs::File::create(path)?;
         serde_json::to_writer_pretty(&mut file, &default_conf)?;
+    }
+
+    Ok(())
+}
+
+pub fn validate_config(conf: &FreecamConfig) -> anyhow::Result<()> {
+    if (conf.camera.vertical_smoothing.abs() >= 1.) {
+        anyhow::bail!(
+            "Smoothening values should be in the range 0..1. Vertical smoothing was `{}`!",
+            conf.camera.vertical_smoothing
+        )
+    }
+    if (conf.camera.horizontal_smoothing.abs() >= 1.) {
+        anyhow::bail!(
+            "Smoothening values should be in the range 0..1. Horizontal smoothing was `{}`!",
+            conf.camera.horizontal_smoothing
+        )
+    }
+    if (conf.camera.rotate_smoothing.abs() >= 1.) {
+        anyhow::bail!(
+            "Smoothening values should be in the range 0..1. Rotate smoothing was `{}`!",
+            conf.camera.rotate_smoothing
+        )
+    }
+    if (conf.update_rate < 30) {
+        anyhow::bail!("Update rate must be at least 30, was {}", conf.update_rate)
     }
 
     Ok(())
