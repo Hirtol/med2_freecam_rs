@@ -69,12 +69,12 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
                 conf = reload_config(config_directory, &mut conf, &mut battle_cam, main_window.0)?;
                 update_duration = Duration::from_secs_f64(1.0 / conf.update_rate as f64);
             }
+        }
 
-            unsafe {
-                // Only run if we're in the foreground. A bit hacky, but eh...
-                if GetForegroundWindow() == main_window.0 {
-                    battle_cam.run(&mut conf, &mut scroll_tracker, &mut key_manager, last_update.elapsed())?;
-                }
+        unsafe {
+            // Only run if we're in the foreground. A bit hacky, but eh...
+            if main_window.is_foreground_window() {
+                battle_cam.run(&mut conf, &mut scroll_tracker, &mut key_manager, last_update.elapsed())?;
             }
 
             last_update = Instant::now();
