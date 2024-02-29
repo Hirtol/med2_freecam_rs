@@ -165,7 +165,7 @@ impl BattleState {
         &mut self,
         mouse_man: &mut MouseManager,
         key_man: &mut KeyboardManager,
-        t_delta: Duration,
+        _t_delta: Duration,
         conf: &mut FreecamConfig,
     ) -> anyhow::Result<()> {
         let target_pos = self.get_game_target_camera();
@@ -198,7 +198,7 @@ impl BattleState {
         &mut self,
         scroll: &mut MouseManager,
         key_man: &mut KeyboardManager,
-        t_delta: Duration,
+        _t_delta: Duration,
         conf: &mut FreecamConfig,
     ) -> anyhow::Result<()> {
         let camera_pos = self.get_game_camera();
@@ -432,7 +432,7 @@ impl BattleState {
         }
 
         // If we're below the ground we should probably move up!
-        // This isn't a perfect solution, as one can still clip a bit, but floating a set amount above the ground kinda ruins the point.
+        // This isn't a perfect solution, as one can still clip a bit, but floating a large amount above the ground kinda ruins the point.
         if conf.camera.prevent_ground_clipping {
             let z_bound = f32::from_bits(self.remote_data.remote_z.load(Ordering::SeqCst));
             let multiplier = if z_bound.is_sign_positive() { 1. } else { -1. };
@@ -463,8 +463,7 @@ impl BattleState {
     }
 
     unsafe fn force_game_height_eval(&mut self) {
-        let remote_fn: unsafe extern "stdcall" fn(*mut f32, *mut f32, f32) =
-            std::mem::transmute(data::CALCULATE_DELTA_Z_TO_GROUND_FN_ADDR);
+        let remote_fn: data::CalcDeltaFn = std::mem::transmute(data::CALCULATE_DELTA_Z_TO_GROUND_FN_ADDR);
         // As far as I can tell in Ghidra this uses up to an offset of 0x8 based on the base pointer, so 3 values.
         // (Specifically, it seems like a delta for the x, z, y coordinates respectively?)
         // Might be wrong, in which case, stack corruption yay!
@@ -553,11 +552,11 @@ impl BattleState {
         }
     }
 
-    unsafe fn get_game_camera<'a, 'b>(&'a self) -> &'b mut BattleCameraView {
+    unsafe fn get_game_camera<'b>(&self) -> &'b mut BattleCameraView {
         self.battle_patcher.patcher.mut_read(data::BATTLE_CAM_ADDR)
     }
 
-    unsafe fn get_game_target_camera<'a, 'b>(&'a self) -> &'b mut BattleCameraTargetView {
+    unsafe fn get_game_target_camera<'b>(&self) -> &'b mut BattleCameraTargetView {
         self.battle_patcher.patcher.mut_read(data::BATTLE_CAM_TARGET_ADDR)
     }
 }

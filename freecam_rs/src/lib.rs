@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use log::LevelFilter;
-use rust_hooking_utils::patching::process::{GameProcess, Window};
+use rust_hooking_utils::patching::process::GameProcess;
 use rust_hooking_utils::patching::LocalPatcher;
 use rust_hooking_utils::raw_input::key_manager::KeyboardManager;
 use rust_hooking_utils::raw_input::virtual_keys::VirtualKey;
 use windows::core::HSTRING;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, MessageBoxExW, MB_OK};
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxExW, MB_OK};
 
 use crate::battle_cam::BattleCamera;
 use crate::config::FreecamConfig;
@@ -47,7 +47,7 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     let main_window = loop {
         if let Some(wnd) = GameProcess::current_process().get_main_window_blocking(None) {
-            if wnd.title().starts_with("M") {
+            if wnd.title().starts_with('M') {
                 break wnd;
             }
         }

@@ -107,6 +107,7 @@ impl<T> GameCell<T> {
         &*self.0.get()
     }
 
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn as_mut(&self) -> &mut T {
         &mut *self.0.get()
     }

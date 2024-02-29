@@ -75,6 +75,7 @@ impl MouseManager {
     }
 
     /// Return the current scroll position
+    #[allow(unused)]
     pub fn get_scroll(&self) -> i32 {
         *self.scroll_pos.lock().unwrap()
     }
