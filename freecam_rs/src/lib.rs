@@ -45,9 +45,8 @@ pub fn dll_attach(hinst_dll: windows::Win32::Foundation::HMODULE) -> Result<()> 
 
     log::info!("Loaded config: {:#?}", conf);
 
-    // Initially our console is the first thing that pops up and thus counts as the main window...
     let main_window = loop {
-        if let Ok(wnd) = GameProcess::current_process().get_main_window() {
+        if let Some(wnd) = GameProcess::current_process().get_main_window_blocking(None) {
             if wnd.title().starts_with("M") {
                 break wnd;
             }
